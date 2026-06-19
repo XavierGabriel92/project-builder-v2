@@ -23,6 +23,7 @@ export interface CliArgs {
   listFlows: boolean; // --list-flows
   yes: boolean; // --yes / -y (auto-approve gates)
   help: boolean; // --help / -h
+  debug: boolean; // --debug (write gate-debug.log)
   agentsDir?: string; // --agents-dir <path>
   model?: string; // --model <provider/id>
   provider?: string; // --provider <name> (e.g. anthropic, openai)
@@ -51,6 +52,7 @@ Options:
   --resume          Resume most recent workflow in the project
   --list-flows      List available flows and exit
   --yes, -y         Auto-approve all gates (CI mode)
+  --debug           Write gate-debug.log with step-by-step trace
   --model <id>      Default model for all steps (provider/model)
   --provider <name>  LLM provider (anthropic, openai, google, deepseek, etc.)
   --api-key <key>    API key for the provider (runtime only, not persisted)
@@ -82,6 +84,7 @@ export function parseArgs(raw: string[]): CliArgs | { error: string; help: strin
     listFlows: false,
     yes: false,
     help: false,
+    debug: false,
   };
 
   const positional: string[] = [];
@@ -103,6 +106,9 @@ export function parseArgs(raw: string[]): CliArgs | { error: string; help: strin
       case "--yes":
       case "-y":
         args.yes = true;
+        break;
+      case "--debug":
+        args.debug = true;
         break;
       case "--flow":
         args.flowId = raw[++i] ?? "";

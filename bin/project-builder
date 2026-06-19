@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# project-builder — launch the flow orchestrator from anywhere
+#
+# Defaults (user --flags override these):
+#   --model deepseek/deepseek-chat
+#   --runner pi-sdk
+#
+# Usage:
+#   project-builder /path/to/project "feature-name" "description"
+#   project-builder --flow bug-fix --yes . "fix" "desc"
+#   project-builder --resume /path/to/project
+
+# Resolve real script location (follow symlinks from npm link)
+if command -v realpath &>/dev/null; then
+  SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+elif command -v greadlink &>/dev/null; then
+  SCRIPT_DIR="$(dirname "$(greadlink -f "$0")")"
+else
+  # macOS fallback: resolve symlink manually
+  SCRIPT="$0"
+  while [ -L "$SCRIPT" ]; do
+    SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(readlink "$SCRIPT")"
+  done
+  SCRIPT_DIR="$(cd "$(dirname "$SCRIPT")" && pwd)"
+fi
+
+MAIN="$SCRIPT_DIR/../src/main.ts"
+
+exec node --experimental-strip-types "$MAIN" \
+  --model deepseek/deepseek-chat \
+  --runner pi-sdk \
+  "$@"

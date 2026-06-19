@@ -120,7 +120,13 @@ export interface FlowProgress {
   // ── Required lifecycle hooks ────────────────────────────────
 
   /** Called once when the flow run begins. */
-  onFlowStart(info: { flowId: string; feature: string; totalSteps: number }): void;
+  onFlowStart(info: {
+    flowId: string;
+    feature: string;
+    totalSteps: number;
+    /** Step history for resume display (agent name + status per step). */
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending" }>;
+  }): void;
 
   /** Called when a step is about to execute (fresh start or retry). */
   onStepStart(step: { agent: string; index: number; attempt: number }): void;

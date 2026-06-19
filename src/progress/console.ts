@@ -15,28 +15,62 @@ export class ConsoleProgress implements FlowProgress {
   private spinnerInterval: ReturnType<typeof setInterval> | null = null;
   private currentStepLabel = "";
   private currentStepStart = 0;
+  private stepList: Array<{ agent: string; status: "completed" | "running" | "pending" }> = [];
+  private flowHeader = "";
+  private stepsRendered = false;
 
   // ── Required lifecycle hooks ─────────────────────────────────
 
-  onFlowStart(info: { flowId: string; feature: string; totalSteps: number }): void {
+  onFlowStart(info: {
+    flowId: string;
+    feature: string;
+    totalSteps: number;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending" }>;
+  }): void {
     this.flowStartTime = Date.now();
-    console.clear();
-    console.log(`🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)\n`);
+    this.flowHeader = `🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)`;
+    this.stepList = info.steps ?? [];
+    this.renderHeader();
   }
 
   onStepStart(step: { agent: string; index: number; attempt: number }): void {
     const retry = step.attempt > 1 ? ` (retry ${step.attempt})` : "";
-    this.currentStepLabel = `Step ${step.index + 1}: ${step.agent}${retry}`;
+    this.currentStepLabel = `${step.agent}${retry}`;
     this.currentStepStart = Date.now();
     this.stepStartTimes.set(step.agent + step.index, Date.now());
 
-    // Start spinner animation
+    // Update step status in the list and re-render
+    if (this.stepList[step.index]) {
+      this.stepList[step.index] = { ...this.stepList[step.index], status: "running" };
+    }
+
+    // Animated spinner — clears + re-renders the full step list every frame
+    // so the running step appears inline with spinner + elapsed time.
+    // CRITICAL: build the entire output as a single string and write atomically.
+    // Splitting process.stdout.write(clear) + console.log(content) into separate
+    // writes causes the terminal to interleave them, producing duplicated output.
     let frame = 0;
-    this.spinnerInterval = setInterval(() => {
+    if (this.spinnerInterval) clearInterval(this.spinnerInterval);
+    const renderFrame = () => {
       const elapsed = formatDuration(Date.now() - this.currentStepStart);
-      process.stdout.write(`\r  ${SPINNER_FRAMES[frame]} ${this.currentStepLabel}  (${elapsed})`);
+      const lines: string[] = [
+        this.flowHeader,
+        "",
+      ];
+      for (const s of this.stepList) {
+        if (s.status === "completed") {
+          lines.push(`  ✓ ${s.agent}`);
+        } else if (s.status === "running") {
+          lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent}  (${elapsed})`);
+        } else {
+          lines.push(`  ○ ${s.agent}`);
+        }
+      }
+      process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
       frame = (frame + 1) % SPINNER_FRAMES.length;
-    }, 80);
+    };
+    renderFrame(); // render immediately
+    this.spinnerInterval = setInterval(renderFrame, 100);
   }
 
   onStepEnd(step: { agent: string; index: number; result: AgentRunResult }): void {
@@ -51,12 +85,20 @@ export class ConsoleProgress implements FlowProgress {
     const elapsed = start ? formatDuration(Date.now() - start) : "";
     this.stepStartTimes.delete(key);
 
+    // Update step status (will be rendered by next onStepStart)
+    if (this.stepList[step.index]) {
+      this.stepList[step.index] = {
+        ...this.stepList[step.index],
+        status: step.result.success ? "completed" : "pending",
+      };
+    }
+
     if (step.result.success) {
-      process.stdout.write(`\r  ✓ ${this.currentStepLabel}  (${elapsed})\n`);
+      // Render final static state with the step marked completed
+      this.renderHeader();
     } else {
-      process.stdout.write(`\r  ✗ ${this.currentStepLabel}  (${elapsed})\n`);
-      const errorMsg = step.result.error ?? "unknown";
-      console.log(`    Error: ${errorMsg}`);
+      this.renderHeader();
+      console.log(`    Error: ${step.result.error ?? "unknown"}`);
     }
   }
 
@@ -106,6 +148,28 @@ export class ConsoleProgress implements FlowProgress {
     } else {
       console.log(`  ⚠ Missing outputs: ${result.missing.join(", ")}`);
     }
+  }
+
+  // ── Rendering ──────────────────────────────────────────────
+
+  /** Clear + render header + static step list (no spinner).
+   *  Builds entire output as a single string for atomic write — see onStepStart
+   *  for the rationale (split writes cause terminal interleaving / duplication). */
+  private renderHeader(): void {
+    const lines: string[] = [
+      this.flowHeader,
+      "",
+    ];
+    for (const s of this.stepList) {
+      if (s.status === "completed") {
+        lines.push(`  ✓ ${s.agent}`);
+      } else if (s.status === "running") {
+        lines.push(`  ⠿ ${s.agent}`);
+      } else {
+        lines.push(`  ○ ${s.agent}`);
+      }
+    }
+    process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
   }
 }
 

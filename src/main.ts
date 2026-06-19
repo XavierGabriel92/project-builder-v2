@@ -56,7 +56,7 @@ const ExitCode = {
 async function main(): Promise<void> {
   // Clear npm preamble noise
   if (!process.argv.includes("--no-clear")) {
-    console.clear();
+    process.stdout.write('\x1b[3J\x1b[H\x1b[2J');
   }
 
   // ── 1. Parse CLI arguments ────────────────────────────────────
@@ -208,6 +208,7 @@ async function main(): Promise<void> {
     const gatePresenter = createGatePresenter(gateName);
 
     console.clear();
+    process.stdout.write('\x1b[3J\x1b[H\x1b[2J');
     const outcome = await runFlow({
       flow: flowDef,
       featureName: info.featureName,
@@ -220,6 +221,7 @@ async function main(): Promise<void> {
       progress: new ConsoleProgress(),
       resumeFrom: workflow.state,
       serviceDirs: workflow.state.service_dirs,
+      debug: args.debug,
     });
 
     return handleOutcome(outcome);
@@ -284,6 +286,7 @@ async function main(): Promise<void> {
 
   // ── 11. Run flow ──────────────────────────────────────────────
   console.clear();
+  process.stdout.write('\x1b[3J\x1b[H\x1b[2J');
   const outcome = await runFlow({
     flow: flowDef,
     featureName,
@@ -294,6 +297,7 @@ async function main(): Promise<void> {
     gatePresenter,
     outputVerifier: new FilesystemVerifier(),
     progress: new ConsoleProgress(),
+    debug: args.debug,
   });
 
   handleOutcome(outcome);

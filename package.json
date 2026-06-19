@@ -4,6 +4,9 @@
   "description": "Layered flow orchestration engine — invoke agents programmatically via swappable backends",
   "type": "module",
   "main": "src/main.ts",
+  "bin": {
+    "project-builder": "bin/project-builder"
+  },
   "scripts": {
     "start": "node --experimental-strip-types src/main.ts --model deepseek/deepseek-chat --runner pi-sdk",
     "ci": "node --experimental-strip-types src/main.ts --model deepseek/deepseek-chat --runner pi-sdk --gate auto-approve --yes",

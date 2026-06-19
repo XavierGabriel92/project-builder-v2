@@ -61,7 +61,8 @@ export function findResumableWorkflows(
       // Only in-progress and awaiting_user workflows are resumable
       if (
         state.status !== "in_progress" &&
-        state.status !== "awaiting_user"
+        state.status !== "awaiting_user" &&
+        state.status !== "abandoned"
       ) {
         continue;
       }

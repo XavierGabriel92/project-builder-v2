@@ -81,13 +81,25 @@ export class InquirerGatePresenter implements GatePresenter {
   // Preview
   // ========================================================================
 
-  /** Read preview file, return a clickable path reference. */
+  /**
+   * Read preview file, return a clickable path reference.
+   *
+   * Wraps the path in an OSC 8 terminal hyperlink so the file remains
+   * clickable even when the path text wraps across lines. Without the
+   * hyperlink escape sequences, terminal emulators relying on text-based
+   * path detection lose the click target at the line break.
+   */
   private readPreview(filePath: string): string {
     const absPath = path.resolve(filePath);
     const stat = fs.statSync(absPath);
     const size = formatSize(stat.size);
     const lines = countLines(absPath);
-    return `📄 ${absPath}  (${lines} lines, ${size})`;
+    // Use OSC 8 hyperlink so the path remains clickable even when it wraps
+    const label = `📄 ${absPath}  (${lines} lines, ${size})`;
+    // Percent-encode the path for the file:// URI so terminals handle
+    // paths with spaces, Unicode, or special characters correctly.
+    const uri = "file://" + encodeURI(absPath);
+    return osc8Hyperlink(uri, label);
   }
 
   // ========================================================================
@@ -231,4 +243,28 @@ function formatSize(bytes: number): string {
 function countLines(filePath: string): number {
   const content = fs.readFileSync(filePath, "utf-8");
   return content.split("\n").length;
+}
+
+// ============================================================================
+// OSC 8 Terminal Hyperlinks
+//
+// Terminal emulators (iTerm2, Kitty, WezTerm, Windows Terminal, etc.) support
+// the OSC 8 escape sequence for clickable hyperlinks. Unlike text-based path
+// detection, OSC 8 links survive line wrapping because the terminal tracks
+// the link by escape sequence boundaries, not by scanning text for patterns.
+//
+// Format: ESC ] 8 ; ; URI ST  LABEL ESC ] 8 ; ; ST
+//   ESC ] = \x1b]   (OSC - Operating System Command)
+//   ST    = \x1b\\   (String Terminator)
+// ============================================================================
+
+const OSC = "\x1b]";
+const ST = "\x1b\\";
+
+/**
+ * Wrap label text in an OSC 8 hyperlink to the given URI.
+ * The label is displayed to the user; the URI is opened on click.
+ */
+function osc8Hyperlink(uri: string, label: string): string {
+  return `${OSC}8;;${uri}${ST}${label}${OSC}8;;${ST}`;
 }

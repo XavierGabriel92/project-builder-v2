@@ -19,6 +19,7 @@
  */
 
 import * as path from "node:path";
+import * as fs from "node:fs";
 import type { FlowDefinition, WorkflowState, FlowStep } from "../engine/types.ts";
 import {
   createWorkflowState,
@@ -73,6 +74,9 @@ export interface OrchestratorOptions {
   /** Optional service directories (for doc-sync, etc.). */
   serviceDirs?: string[];
 
+  /** Enable debug logging (writes gate-debug.log to workflow dir). */
+  debug?: boolean;
+
   /** Resume from an existing workflow state (for --resume). */
   resumeFrom?: WorkflowState;
 }
@@ -100,6 +104,17 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
   let state: WorkflowState;
   if (resumeFrom) {
     state = resumeFrom;
+    // Convert terminal statuses back to in_progress so the main loop can run
+    if (state.status === "abandoned" || state.status === "done") {
+      state = { ...state, status: "in_progress" };
+    }
+    // Advance past already-completed steps
+    while (
+      state.current_step_index < state.steps.length &&
+      state.steps[state.current_step_index]?.status === "completed"
+    ) {
+      state = { ...state, current_step_index: state.current_step_index + 1 };
+    }
   } else {
     const featurePath = resolveFeaturePath(featureName, projectRoot);
     state = createWorkflowState(
@@ -110,6 +125,11 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
   }
 
   const workflowDir = resolveWorkflowDir(projectRoot, state.feature_path);
+
+  // ── Debug: reset log for fresh run ─────────────────────────
+  if (options.debug) {
+    fs.writeFileSync(path.join(workflowDir, "gate-debug.log"), "", "utf-8");
+  }
 
   // ── Resume: re-present gate if state is awaiting_user ─────────
   if (state.status === "awaiting_user" && state.gate) {
@@ -171,6 +191,12 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
     flowId: flow.id,
     feature: state.feature,
     totalSteps: flow.steps.length,
+    steps: state.steps.map((s, i) => ({
+      agent: flow.steps[i]?.agent ?? s.agent,
+      status: s.status === "completed" ? "completed" as const
+        : s.status === "running" ? "running" as const
+        : "pending" as const,
+    })),
   });
 
   while (true) {
@@ -180,6 +206,7 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
     state = await executeStep(
       flowStep, state, workflowDir, projectRoot, agentsDir,
       agentRunner, gatePresenter, outputVerifier, progress,
+      options.debug,
     );
 
     // Persist after each step
@@ -218,10 +245,18 @@ async function executeStep(
   gatePresenter: GatePresenter,
   outputVerifier: OutputVerifier,
   progress?: FlowProgress,
+  debug?: boolean,
 ): Promise<WorkflowState> {
   // Load agent manifest
   const agent = loadAgent(agentsDir, flowStep.agent);
   const maxAttempts = flowStep.attempts ?? 1;
+
+  // ── Debug logging helper ──────────────────────────────────
+  const debugLog = (entry: string) => {
+    if (!debug) return;
+    const ts = new Date().toISOString();
+    fs.appendFileSync(path.join(workflowDir, "gate-debug.log"), `[${ts}] ${entry}\n`, "utf-8");
+  };
 
   // ── Gate loader closure (replaces noopLoadGate) ─────────────
   // Properly creates gate state via buildGate so the engine enters
@@ -234,6 +269,8 @@ async function executeStep(
   // Track feedback from gate rejections for retry injection
   let feedbackForRetry: string | undefined;
 
+  debugLog(`EXECUTE STEP START step=${flowStep.agent} stepIndex=${state.current_step_index} maxAttempts=${maxAttempts} requestApproval=${flowStep.requestApproval ?? false} approval=${agent.manifest.approval ? "yes" : "NO"} status=${state.status} feedbackForRetry=${feedbackForRetry ?? "(none)"}`);
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // Mark step running in engine
     state = startStep(state);
@@ -243,8 +280,10 @@ async function executeStep(
     // ── Build prompt with retry feedback ───────────────────────
     let prompt = buildPrompt(agent, state);
     if (feedbackForRetry) {
-      prompt = prompt + `\n\n## Feedback from Review\n\n${feedbackForRetry}\n\nRevise your work based on this feedback.`;
-      feedbackForRetry = undefined; // only inject for this attempt
+      // Inject feedback prominently — BEFORE the agent instructions,
+      // not after the completion suffix where it would be ignored.
+      debugLog(`PROMPT INJECTED feedback="${feedbackForRetry.slice(0, 80)}${feedbackForRetry.length > 80 ? '...' : ''}" attempt=${attempt}`);
+      prompt = `## 🔄 Revision Request\n\n${feedbackForRetry}\n\nRevise your work based on the feedback above.\n\n---\n\n${prompt}`;
     }
 
     // ── Layer boundary: AgentRunner ────────────────────────────
@@ -266,7 +305,8 @@ async function executeStep(
     // ── Handle failure ─────────────────────────────────────────
     if (!result.success) {
       if (attempt < maxAttempts && result.error) {
-        // Apply error result with retryable flag, then continue loop
+        // Apply error result with retryable flag, then continue loop.
+        // Do NOT clear feedbackForRetry — it will be re-injected on the next attempt.
         const transition = applyStepResult(
           state,
           { result: "error", message: result.error, retryable: true },
@@ -295,7 +335,8 @@ async function executeStep(
     if (!verification.allExist) {
       if (strictOutputs) {
         if (attempt < maxAttempts) {
-          // Outputs missing but retries remain — treat as error and retry
+          // Outputs missing but retries remain — treat as error and retry.
+          // Keep feedbackForRetry so it's re-injected on the next attempt.
           const missingList = verification.missing.join(", ");
           const transition = applyStepResult(
             state,
@@ -321,6 +362,10 @@ async function executeStep(
     }
 
     // ── Apply success to engine ────────────────────────────────
+    // Step succeeded — clear any pending retry feedback so it
+    // doesn't leak into the next step.
+    feedbackForRetry = undefined;
+
     const transition = applyStepResult(
       state,
       { result: "success", message: result.summary },
@@ -331,6 +376,8 @@ async function executeStep(
     // ── Gate? ──────────────────────────────────────────────────
     if (flowStep.requestApproval && agent.manifest.approval && state.gate) {
       const gateStepIndex = state.gate.stepIndex;
+
+      debugLog(`GATE ENTERED step=${flowStep.agent} stepIndex=${gateStepIndex} attempt=${attempt} maxAttempts=${maxAttempts} header="${state.gate.header}"`);
 
       // Engine entered awaiting_user with a gate object — present it
       progress?.onGate({
@@ -346,15 +393,22 @@ async function executeStep(
         gatePresenter, progress,
       );
 
+      debugLog(`GATE RESOLVED stepStatus=${state.steps[gateStepIndex]?.status ?? "?"} lastFeedback=${state.steps[gateStepIndex]?.last_feedback ?? "(none)"} stateStatus=${state.status} gate=${state.gate ? "present" : "undefined"} currentStepIndex=${state.current_step_index}`);
+
       // After gate resolution, engine sets status to "in_progress"
       // for BOTH approved and rejected. Distinguish by checking if
       // the gated step was reset to "pending" (rejected/retry).
       const gatedStep = state.steps[gateStepIndex];
       if (gatedStep && gatedStep.status === "pending") {
-        // Rejected — step was reset for retry, inject feedback
+        // Rejected — step was reset for retry, inject feedback.
+        // Gate-driven retries do NOT count against maxAttempts — the agent
+        // succeeded, the human just wants revisions. Decrement attempt so the
+        // for-loop increment doesn't consume the last attempt without retrying.
         if (gatedStep.last_feedback) {
           feedbackForRetry = gatedStep.last_feedback;
         }
+        debugLog(`GATE REJECTED step=${flowStep.agent} attempt=${attempt} maxAttempts=${maxAttempts} feedback="${gatedStep.last_feedback ?? "(none)"}" attemptMinus=${attempt - 1} continuePlus=${attempt}`);
+        attempt--;
         continue; // retry the step
       }
 
