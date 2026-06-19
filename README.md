@@ -1,286 +1,140 @@
-# Project Builder v2 — Architecture Proposal
+# Project Builder v2
 
-**A layered flow orchestration engine where agents are invoked programmatically via a swappable AgentRunner interface, rather than executed by an LLM supervisor inside a pi extension.**
+**Flow orchestration engine.** Pure TypeScript — the LLM never controls state transitions. Agents run via swappable backends. Gates are direct UI prompts. Resume from any crash point.
 
-Date: 2026-06-18
+## Quick start
+
+```bash
+npm start
+```
+
+Prompts you for a feature name and description. Auto-detects in-progress workflows and offers to resume. Uses DeepSeek by default via pi SDK.
+
+### Commands
+
+| Command | What it does |
+|---------|-------------|
+| `npm start` | Interactive mode — pick flow, enter feature name, approve/reject gates |
+| `npm run ci -- my-feature "Description"` | Unattended CI mode — auto-approves all gates |
+| `npm run resume` | Resume most recent interrupted workflow (auto-approve gates) |
+| `npm run interactive` | Full pi TUI — manually steer each step |
+| `npm run list` | List available flows |
+| `npm test` | Run 15 unit tests |
+
+### CLI flags (when not using npm scripts)
+
+```
+--flow <id>       Pick a flow (default: feature-build)
+--runner <name>   pi-sdk | pi-interactive | claude-code (default: pi-sdk)
+--gate <name>     inquirer | auto-approve (default: inquirer)
+--model <p/id>    Model override (e.g. anthropic/claude-sonnet-4-5)
+--provider <p>    LLM provider for --api-key
+--api-key <key>   Runtime API key (not persisted)
+--resume          Resume most recent workflow
+--yes, -y         Auto-approve all gates
+--no-clear        Keep terminal history
+```
+
+### Auth
+
+Priority: `--api-key` > `~/.pi/agent/auth.json` > env vars (`ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY`, etc.)
 
 ---
 
-## Motivation
-
-Project Builder v1 (current) runs inside pi as an extension. An LLM supervisor calls `flow_start` → `flow_step` → `flow_step_complete` → `flow_record_gate`, mediating every state transition. This works but has fundamental issues:
-
-- The LLM supervisor costs tokens on every step (not doing useful work, just orchestrating)
-- Gate handling requires ~200 lines of protocol instruction to prevent LLM mistakes (wrong nonce, fabricating answers, executing feedback as work orders)
-- The LLM can skip steps, misread prompts, or hallucinate state transitions
-- Flow control logic lives in prompt text, not code — impossible to unit test
-
-**v2 flips this:** the flow orchestrator is pure TypeScript code. Agents are invoked via a swappable `AgentRunner` interface. Gates are direct UI prompts. The LLM only does useful work — it never mediates flow state.
-
----
-
-## Architecture Sketch
+## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                    FLOW ORCHESTRATOR                          │
-│                    (orchestrator.ts)                          │
-│                                                               │
-│  "for each step: run agent → verify outputs → present gate   │
-│   → advance or retry"                                        │
-│                                                               │
-│  Knows about: FlowDefinition, WorkflowState, Engine           │
-│  Knows NOTHING about: pi SDK, Claude Code, CLI, Web UI       │
-│                                                               │
-│             │                  │                  │           │
-│      AgentRunner          GatePresenter      OutputVerifier   │
-│      (interface)          (interface)        (interface)      │
-└─────────┼────────────────────┼───────────────────┼───────────┘
-          │                    │                   │
-    ┌─────┴──────────┐  ┌──────┴────────┐  ┌───────┴──────────┐
-    │ LAYER 2        │  │ LAYER 3       │  │ LAYER 1 (trivial)│
-    │ Agent Runners  │  │ Gate UIs      │  │ Filesystem check │
-    └────────────────┘  └───────────────┘  └──────────────────┘
+┌──────────────────────────────────────────────┐
+│              FLOW ORCHESTRATOR               │
+│              (orchestrator.ts)               │
+│                                              │
+│  iterate steps → run agent → verify outputs  │
+│  → present gate → advance / retry / block    │
+│                                              │
+│  Pure TypeScript. Zero LLM in control path.  │
+└──────┬──────────────┬──────────────┬─────────┘
+       │              │              │
+  AgentRunner    GatePresenter  OutputVerifier
+  (interface)    (interface)    (interface)
+       │              │              │
+  ┌────┴────┐   ┌────┴────┐   ┌────┴────┐
+  │ pi-sdk  │   │inquirer │   │filesystem│
+  │ pi-tui  │   │auto-ok  │   │ glob     │
+  │ claude  │   │ pi-tui  │   └─────────┘
+  └─────────┘   └─────────┘
 ```
 
-**Layers:**
+### Layers
 
 | Layer | Role | Swappable |
 |-------|------|-----------|
-| **Orchestrator** | Pure logic: iterate steps, retry, gate, advance. Depends only on interfaces. | No — this IS project-builder |
-| **AgentRunner** | Invoke an agent (LLM session) and return results | Yes — pi SDK, Claude Code, direct API, etc. |
-| **GatePresenter** | Show approval dialog, collect user answer | Yes — Inquirer CLI, pi TUI, web dashboard, auto-approve (CI) |
-| **OutputVerifier** | Check expected files exist after agent runs | Yes — filesystem, git diff, custom |
-| **FlowProgress** | Report step start/end, gates, completion (observability) | Yes — console, Slack, noop |
-| **Engine** | Pure state machine: createWorkflowState, startStep, applyStepResult, applyGateAnswer | Reused from v1 (transitions.ts, persistence.ts, agent-loader.ts) |
+| **Engine** (`src/engine/`) | Types, state machine, persistence, agent loader, prompt builder | No (forked from v1) |
+| **Orchestrator** (`src/orchestrator/`) | `runFlow()` — pure logic, depends only on interfaces | No |
+| **AgentRunner** (`src/runners/`) | Invoke LLM session, return results | Yes |
+| **GatePresenter** (`src/gates/`) | Show approval dialog, collect answer | Yes |
+| **OutputVerifier** (`src/verifiers/`) | Check output files exist | Yes |
+| **FlowProgress** (`src/progress/`) | Step-by-step spinner UI with timing | Yes |
+| **Flows** (`src/flows/`) | Flow definitions, validation, discovery | Yes |
+| **CLI** (`src/cli/`) | Args, config, interactive prompts, resume | Yes |
+
+### v1 → v2: what vanished
+
+~800 lines of LLM-control machinery removed:
+
+- `APPROVAL_INSTRUCTION` (200+ lines teaching LLM the gate protocol)
+- `SUPPRESS_SUBAGENT_PROGRESS` (LLM subagent tool control)
+- Gate nonce system (LLMs can't fabricate answers anymore)
+- 9 `flow_*` pi custom tools
+- `src/ui/` extension layer
+
+### v1 → v2: what stayed
+
+Engine layer forked verbatim from v1 with 3 import path fixes:
+
+- `types.ts` — FlowDefinition, WorkflowState, AgentManifest
+- `transitions.ts` — Pure state machine (createWorkflowState, startStep, applyStepResult, applyGateAnswer)
+- `persistence.ts` — Atomic workflow.json I/O
+- `agent-loader.ts` — Parse agents/*.md → manifest + prompt
+- `agents/*.md` — 15 agent manifests (spec-write, plan, implement, review, lint, doc-sync, etc.)
+
+### New in v2
+
+- `prompt-builder.ts` — Extracted from v1's engine.ts, ~81 lines of LLM protocol stripped
+- `orchestrator.ts` — `runFlow()` with retry, gate, fast-forward resume, non-strict output mode
+- Swappable runners: pi-sdk (programmatic), pi-interactive (TUI), claude-code (CLI)
+- Inquirer gate presenter with clickable file paths and feedback collection
+- ConsoleProgress: spinner animation, step timing, total duration
+- Auto-resume: detects in-progress workflows, fast-forwards completed steps
+- 5 built-in flows: feature-build, bug-fix, small-feature, quick-build, ci-build
 
 ---
 
-## Layer 1: Ports (stable contracts)
-
-`src/orchestrator/ports.ts` — never changes when you swap implementations.
-
-```typescript
-export interface AgentRunInput {
-  prompt: string;
-  systemPrompt?: string;
-  tools: string[];
-  cwd: string;
-  model?: string;
-  contextFiles?: string[];
-}
-
-export interface AgentRunResult {
-  success: boolean;
-  summary: string;
-  expectedOutputs: { path: string; exists: boolean }[];
-  messages?: unknown[];
-  error?: string;
-}
-
-export interface AgentRunner {
-  readonly name: string;
-  run(input: AgentRunInput): Promise<AgentRunResult>;
-}
-
-export interface GateInput {
-  header: string;
-  previewPath?: string;
-  options: Array<{
-    label: string;
-    description: string;
-    advance: boolean;
-    abort?: boolean;
-    feedback?: boolean;
-  }>;
-}
-
-export interface GateAnswer {
-  label: string;
-  advance: boolean;
-  abort?: boolean;
-  feedback?: string;
-}
-
-export interface GatePresenter {
-  readonly name: string;
-  present(gate: GateInput, cwd: string): Promise<GateAnswer>;
-}
-
-export interface OutputVerifier {
-  verify(expectedOutputs: string[], cwd: string): {
-    allExist: boolean;
-    missing: string[];
-    existing: string[];
-  };
-}
-
-export interface FlowProgress {
-  onStepStart(step: { agent: string; index: number; attempt: number }): void;
-  onStepEnd(step: { agent: string; index: number; result: AgentRunResult }): void;
-  onGate(gate: GateInput): void;
-  onFlowComplete(): void;
-  onFlowBlocked(error: string): void;
-}
-```
-
----
-
-## Layer 2: Orchestrator (pure logic)
-
-`src/orchestrator/orchestrator.ts` — the engine. Does NOT import pi SDK, Inquirer, or any concrete implementation. Only imports the engine (transitions, persistence, agent-loader) and ports.
-
-Main function: `runFlow(options: OrchestratorOptions): Promise<FlowOutcome>`
+## Files
 
 ```
-while steps remain:
-  for attempt in 1..maxAttempts:
-    mark step running
-    → agentRunner.run(prompt)        // layer boundary
-    if failed → retry or block
-    → outputVerifier.verify(files)
-    if missing → retry (strict) or warn
-    if gate step:
-      → gatePresenter.present(gate)  // layer boundary
-      if approve → advance
-      if reject → retry with feedback
-      if abort → abandon
-    else → advance
-  persist workflow.json
-→ done
+src/
+├── engine/          types, transitions, persistence, agent-loader, prompt-builder, frontmatter, project-rules
+├── orchestrator/    ports.ts, orchestrator.ts
+├── runners/         pi-sdk-runner, pi-interactive-runner, claude-code-runner, shared, config, registry
+├── gates/           inquirer-gate, noop-gate, pi-tui-gate, resolver
+├── verifiers/       filesystem (glob support, permission handling)
+├── progress/        console (spinner, timing), noop
+├── flows/           builtin (5 flows), validation, discovery
+├── cli/             args, factory, config, interactive, resume
+└── main.ts          entry point
+agents/              15 agent .md manifests + subagents/
+test/                15 prompt-builder unit tests
+plans/               6 implementation plans
+docs/                gate bug decision record
 ```
 
----
+## Exit codes
 
-## Layer 3a: Agent Runners
-
-Swappable implementations of `AgentRunner`.
-
-| Implementation | What it does |
-|----------------|-------------|
-| `PiSdkRunner` | Creates an `AgentSession` via pi SDK, streams output to stdout, waits for completion. Programmatic — no TUI. |
-| `PiInteractiveRunner` | Hands control to pi's full interactive TUI (`InteractiveMode`). Human gets message queue, tree nav, model switching, compaction. |
-| `ClaudeCodeRunner` | Spawns `claude` CLI process, pipes prompt, waits for exit. |
-| `DirectApiRunner` | Direct Anthropic/OpenAI API calls. No pi dependency at all. |
-
-To change agent backend: swap one import in `main.ts`.
-
----
-
-## Layer 3b: Gate Presenters
-
-Swappable implementations of `GatePresenter`.
-
-| Implementation | What it does |
-|----------------|-------------|
-| `InquirerGatePresenter` | CLI prompts via Inquirer.js. Shows preview file, presents options, collects optional free-text feedback. |
-| `PiTuiGatePresenter` | Uses pi's `ctx.ui.select` / `ctx.ui.input` when running inside a pi extension. |
-| `AutoApproveGate` | Auto-approves every gate. For CI/CD pipelines. |
-| `WebGatePresenter` | POSTs gate to a web dashboard, waits for WebSocket/SSE response. |
-
-To change gate UX: swap one import in `main.ts`.
-
----
-
-## Directory structure
-
-```
-project-builder-v2/
-├── src/
-│   ├── engine/                    # Reused from v1 (mostly unchanged)
-│   │   ├── types.ts               #   FlowDefinition, WorkflowState, AgentManifest, etc.
-│   │   ├── transitions.ts         #   Pure state machine
-│   │   ├── persistence.ts         #   Atomic workflow.json read/write
-│   │   └── agent-loader.ts        #   Parse agents/*.md → prompt + manifest
-│   │
-│   ├── orchestrator/
-│   │   ├── ports.ts               # AgentRunner, GatePresenter, OutputVerifier, FlowProgress
-│   │   └── orchestrator.ts        # runFlow() — pure logic, depends only on ports + engine
-│   │
-│   ├── runners/
-│   │   ├── pi-sdk-runner.ts       # AgentRunner via createAgentSession()
-│   │   ├── pi-interactive-runner.ts # AgentRunner via InteractiveMode (full TUI)
-│   │   └── claude-code-runner.ts  # AgentRunner via `claude` CLI
-│   │
-│   ├── gates/
-│   │   ├── inquirer-gate.ts       # GatePresenter via Inquirer.js CLI
-│   │   ├── pi-tui-gate.ts         # GatePresenter via pi's ctx.ui
-│   │   └── noop-gate.ts           # GatePresenter that auto-approves (CI)
-│   │
-│   ├── verifiers/
-│   │   └── filesystem.ts          # OutputVerifier via fs.existsSync
-│   │
-│   ├── progress/
-│   │   └── console.ts             # FlowProgress that logs to stdout
-│   │
-│   ├── flows/
-│   │   └── builtin.ts             # FEATURE_BUILD_FLOW and other FlowDefinitions
-│   │
-│   └── main.ts                    # Entry point — wires implementations together
-│
-├── agents/                         # Agent .md manifests (reused from v1)
-│   ├── spec-write.md
-│   ├── plan.md
-│   ├── implement.md
-│   ├── review.md
-│   ├── lint.md
-│   ├── doc-sync.md
-│   └── subagents/
-│       ├── scout.md
-│       ├── worker.md
-│       └── reviewer.md
-│
-├── test/
-│   ├── orchestrator.test.ts       # Unit tests for runFlow with mock AgentRunner/GatePresenter
-│   ├── transitions.test.ts        # Reused from v1
-│   └── agent-loader.test.ts       # Reused from v1
-│
-├── package.json
-└── tsconfig.json
-```
-
----
-
-## What disappears from v1
-
-These exist solely to control an LLM supervisor. They vanish in v2:
-
-| v1 artifact | Why it's gone |
-|-------------|---------------|
-| `APPROVAL_INSTRUCTION` (200+ lines) | No LLM to teach the gate protocol |
-| `SUPPRESS_SUBAGENT_PROGRESS` | No LLM calling the subagent tool |
-| `completionSuffix` | No need to tell the LLM to stop |
-| `workspacePrefix` / `previousStepsDigest` | Now assembled by the orchestrator, not injected into an LLM prompt |
-| Gate nonce system (`crypto.randomUUID()`) | No LLM to fabricate answers — gate is a direct function call |
-| `checkGateBlock()` | No LLM to do work between gate presentation and recording |
-| `ALLOWED_DURING_GATE` set | Same reason |
-| `src/ui/` (tools.ts, commands.ts, engine-context.ts, step-summary-widget.ts) | No pi extension layer — replaced by direct SDK calls |
-| 9 `flow_*` pi custom tools | Replaced by direct engine API calls |
-
-**Net reduction: ~800+ lines of LLM-control machinery.**
-
----
-
-## What stays from v1 (reused as-is)
-
-| v1 artifact | Why it stays |
-|-------------|-------------|
-| `types.ts` — all type definitions | Same FlowDefinition, WorkflowState, AgentManifest, etc. |
-| `transitions.ts` — pure state machine | Same state transitions, now called directly from orchestrator |
-| `persistence.ts` — atomic workflow.json I/O | Same persistence needs |
-| `agent-loader.ts` — parse .md → AgentManifest + prompt | Same parsing, slightly different prompt assembly |
-| `agents/*.md` — all agent manifests | Same prompts, same approval dialogs |
-| `flows/index.ts` — FlowDefinitions | Same flow definitions |
-| `frontmatter.ts` — YAML frontmatter parser | Same parsing |
-| `project-rules.ts` — AGENTS.md discovery | Same project context discovery |
-
----
-
-## Key constraints to enforce in implementation
-
-1. **Orchestrator never imports concrete implementations.** Only `ports.ts`, `engine/*`, and `node:path`.
-2. **AgentRunner implementations MUST handle their own session lifecycle.** Create, run, dispose. No leaking state.
-3. **GatePresenter implementations MUST block until answered.** No callbacks or event-based gates — the orchestrator does `await gatePresenter.present(...)`.
-4. **Output verification happens AFTER agent completion, BEFORE gate.** So the human sees a gate with the actual output file available.
-5. **Engine state is persisted at every transition.** If the process crashes, resume from workflow.json.
-6. **Agent .md files remain the single source of truth** for prompts, tools, subagents, and approval dialogs. No hardcoded agent behavior in the orchestrator.
+| Code | Meaning |
+|------|---------|
+| 0 | Flow completed |
+| 1 | Usage error |
+| 2 | Flow validation failed |
+| 3 | Flow blocked (exhausted retries) |
+| 4 | Flow abandoned (user aborted) |
+| 5 | Runtime error |

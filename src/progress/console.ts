@@ -1,43 +1,61 @@
 /**
  * Console Progress Reporter
  *
- * Logs flow progress to stdout with emoji indicators and step timing.
- * Swap for SlackProgress, WebhookProgress, or NoopProgress
- * without touching the orchestrator.
+ * Clean step-by-step UI with spinner animation during agent execution.
+ * No raw agent output — just step name, elapsed time, and status.
  */
 
 import type { FlowProgress, AgentRunResult, GateInput } from "../orchestrator/ports.ts";
 
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 export class ConsoleProgress implements FlowProgress {
   private stepStartTimes = new Map<string, number>();
   private flowStartTime = 0;
+  private spinnerInterval: ReturnType<typeof setInterval> | null = null;
+  private currentStepLabel = "";
+  private currentStepStart = 0;
 
   // ── Required lifecycle hooks ─────────────────────────────────
 
   onFlowStart(info: { flowId: string; feature: string; totalSteps: number }): void {
     this.flowStartTime = Date.now();
-    console.log(`\n🚀 Flow: ${info.flowId} — ${info.feature}`);
-    console.log(`   Steps: ${info.totalSteps}`);
+    console.clear();
+    console.log(`🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)\n`);
   }
 
   onStepStart(step: { agent: string; index: number; attempt: number }): void {
     const retry = step.attempt > 1 ? ` (retry ${step.attempt})` : "";
-    console.log(`\n▶ Step ${step.index + 1}: ${step.agent}${retry}`);
+    this.currentStepLabel = `Step ${step.index + 1}: ${step.agent}${retry}`;
+    this.currentStepStart = Date.now();
     this.stepStartTimes.set(step.agent + step.index, Date.now());
+
+    // Start spinner animation
+    let frame = 0;
+    this.spinnerInterval = setInterval(() => {
+      const elapsed = formatDuration(Date.now() - this.currentStepStart);
+      process.stdout.write(`\r  ${SPINNER_FRAMES[frame]} ${this.currentStepLabel}  (${elapsed})`);
+      frame = (frame + 1) % SPINNER_FRAMES.length;
+    }, 80);
   }
 
   onStepEnd(step: { agent: string; index: number; result: AgentRunResult }): void {
+    // Stop spinner
+    if (this.spinnerInterval) {
+      clearInterval(this.spinnerInterval);
+      this.spinnerInterval = null;
+    }
+
     const key = step.agent + step.index;
     const start = this.stepStartTimes.get(key);
     const elapsed = start ? formatDuration(Date.now() - start) : "";
     this.stepStartTimes.delete(key);
 
     if (step.result.success) {
-      const timing = elapsed ? ` (${elapsed})` : "";
-      console.log(`  ✓ ${step.agent} completed${timing}`);
+      process.stdout.write(`\r  ✓ ${this.currentStepLabel}  (${elapsed})\n`);
     } else {
+      process.stdout.write(`\r  ✗ ${this.currentStepLabel}  (${elapsed})\n`);
       const errorMsg = step.result.error ?? "unknown";
-      console.log(`  ✗ ${step.agent} failed (${elapsed})`);
       console.log(`    Error: ${errorMsg}`);
     }
   }
@@ -48,7 +66,7 @@ export class ConsoleProgress implements FlowProgress {
 
   onFlowComplete(): void {
     const total = formatDuration(Date.now() - this.flowStartTime);
-    console.log(`\n✅ Flow complete (${total})`);
+    console.log(`\n✅ Done (${total})\n`);
   }
 
   onFlowAbandoned(): void {

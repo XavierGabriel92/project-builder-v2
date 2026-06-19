@@ -45,18 +45,16 @@ export class PiSdkRunner implements AgentRunner {
     this.authStorage = options.authStorage;
     this.modelRegistry = options.modelRegistry;
     this.defaultModel = options.defaultModel;
-    this.stream = options.stream ?? true;
+    this.stream = options.stream ?? false;
     this.timeout = options.timeout;
   }
 
   async run(input: AgentRunInput): Promise<AgentRunResult> {
     // ── Resolve model ─────────────────────────────────────────
     const modelString = input.model ?? this.defaultModel;
-    const model = modelString ? resolveModel(modelString) : undefined;
+    const model = modelString ? resolveModel(modelString, this.modelRegistry) : undefined;
 
-    if (!model && !this.defaultModel) {
-      // Let createAgentSession pick its own default — only error if
-      // the user explicitly requested a model we couldn't resolve.
+    if (!model) {
       if (input.model) {
         return {
           success: false,
@@ -65,6 +63,7 @@ export class PiSdkRunner implements AgentRunner {
           error: `Cannot resolve model "${input.model}"`,
         };
       }
+      // No model specified at all — let createAgentSession pick its default
     }
 
     // ── Build prompt with context files ───────────────────────
@@ -155,7 +154,7 @@ export class PiSdkRunner implements AgentRunner {
       };
     } finally {
       if (timer) clearTimeout(timer);
-      await session.dispose?.().catch(() => {});
+      try { await session.dispose?.(); } catch { /* cleanup is best-effort */ }
     }
   }
 }
@@ -166,15 +165,22 @@ export class PiSdkRunner implements AgentRunner {
 
 /**
  * Resolve a "provider/modelId" string to a pi Model object.
- * Falls back to ModelRegistry.find() if getModel doesn't know the provider.
+ * Tries pi's built-in getModel() first, then falls back to ModelRegistry.find()
+ * for custom providers configured in auth.json (e.g. DeepSeek, Moonshot).
  */
-function resolveModel(modelString: string) {
+function resolveModel(
+  modelString: string,
+  modelRegistry: ReturnType<typeof ModelRegistry.create>,
+) {
   const parts = modelString.split("/");
   if (parts.length === 2) {
     const [provider, id] = parts;
-    return getModel(provider, id) ?? undefined;
+    // Built-in models (Anthropic, OpenAI, Google, etc.)
+    const builtin = getModel(provider, id);
+    if (builtin) return builtin;
+    // Custom providers from auth.json (DeepSeek, Moonshot, etc.)
+    return modelRegistry.find(provider, id) ?? undefined;
   }
-  // Single token — not enough info, let the caller handle
   return undefined;
 }
 

@@ -5,8 +5,12 @@
   "type": "module",
   "main": "src/main.ts",
   "scripts": {
-    "start": "node --experimental-strip-types src/main.ts",
-    "test": "echo \"Tests not yet implemented\" && exit 0"
+    "start": "node --experimental-strip-types src/main.ts --model deepseek/deepseek-chat --runner pi-sdk",
+    "ci": "node --experimental-strip-types src/main.ts --model deepseek/deepseek-chat --runner pi-sdk --gate auto-approve --yes",
+    "interactive": "node --experimental-strip-types src/main.ts --runner pi-interactive",
+    "resume": "node --experimental-strip-types src/main.ts --resume --model deepseek/deepseek-chat --runner pi-sdk --gate auto-approve --yes",
+    "list": "node --experimental-strip-types src/main.ts --list-flows",
+    "test": "node --experimental-strip-types --test test/engine/prompt-builder.test.ts"
   },
   "dependencies": {
     "@earendil-works/pi-coding-agent": "*",

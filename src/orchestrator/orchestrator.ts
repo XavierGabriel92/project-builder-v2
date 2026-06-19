@@ -124,7 +124,55 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
     }
   }
 
+  // ── Resume: fast-forward if step was interrupted but outputs exist ──
+  if (resumeFrom) {
+    const interruptedStep = state.steps[state.current_step_index];
+    if (interruptedStep?.status === "running") {
+      const flowStep = currentStep(state);
+      if (flowStep) {
+        const agent = loadAgent(agentsDir, flowStep.agent);
+        const outputs = agent.manifest.outputs ?? [];
+        if (outputs.length > 0) {
+          const verification = outputVerifier.verify(
+            outputs.map(o => path.join(workflowDir, o)),
+            workflowDir,
+          );
+          if (verification.allExist) {
+            console.log(`  ↪ Fast-forward: outputs already exist (${outputs.join(", ")}), skipping agent`);
+            const gateLoader = (_a: string, si: number) => {
+              if (!agent.manifest.approval) return null;
+              return buildGate(agent.manifest, si, "v2-no-nonce");
+            };
+            const existingMsg = interruptedStep.activity?.message ?? `Resumed: outputs already exist`;
+            const transition = applyStepResult(
+              state,
+              { result: "success", message: existingMsg },
+              gateLoader,
+            );
+            state = transition.state;
+            writeWorkflow(projectRoot, state.feature_path, state);
+
+            // Present gate if needed
+            if (flowStep.requestApproval && agent.manifest.approval && state.gate) {
+              state = await presentAndResolveGate(
+                state, state.gate, workflowDir, projectRoot,
+                gatePresenter, progress,
+              );
+              writeWorkflow(projectRoot, state.feature_path, state);
+            }
+          }
+        }
+      }
+    }
+  }
+
   // ── Main loop ────────────────────────────────────────────────
+  progress?.onFlowStart({
+    flowId: flow.id,
+    feature: state.feature,
+    totalSteps: flow.steps.length,
+  });
+
   while (true) {
     const flowStep = currentStep(state);
     if (!flowStep) break; // done — no more steps

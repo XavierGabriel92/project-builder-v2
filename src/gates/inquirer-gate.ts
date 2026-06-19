@@ -2,11 +2,8 @@
  * Inquirer Gate Presenter
  *
  * CLI-based approval gate using Inquirer.js.
- * Shows preview file contents (with pagination for large files),
- * presents options, collects optional feedback (with escape hatch),
- * and supports configurable timeout.
- *
- * Requires: npm install inquirer
+ * Shows preview content inline above gate options (truncated if >80 lines),
+ * collects optional feedback, and supports configurable timeout.
  */
 
 import inquirer from "inquirer";
@@ -33,13 +30,6 @@ export interface InquirerGateOptions {
    * Default: "abort"
    */
   timeoutAction?: "approve" | "abort";
-
-  /**
-   * Maximum number of preview lines to show inline (without pagination).
-   * Files with more lines will show a pagination menu.
-   * Default: 40
-   */
-  previewPageLines?: number;
 }
 
 // ============================================================================
@@ -57,18 +47,19 @@ export class InquirerGatePresenter implements GatePresenter {
 
   async present(gate: GateInput, cwd: string): Promise<GateAnswer> {
     // ── Show preview file if specified ──────────────────────────
+    let previewText = "";
     if (gate.previewPath) {
       const fullPath = path.resolve(cwd, gate.previewPath);
       if (fs.existsSync(fullPath)) {
-        await this.showPreview(fullPath);
+        previewText = this.readPreview(fullPath);
       } else {
-        console.log(`\n⚠ Preview file not found: ${gate.previewPath}\n`);
+        previewText = `⚠ Preview file not found: ${gate.previewPath}`;
       }
     }
 
     // ── Present options (with optional timeout) ─────────────────
     const choice = await this.promptWithTimeout(
-      () => this.presentOptions(gate),
+      () => this.presentOptions(gate, previewText),
       gate,
     );
 
@@ -87,65 +78,16 @@ export class InquirerGatePresenter implements GatePresenter {
   }
 
   // ========================================================================
-  // Preview with pagination for large files
+  // Preview
   // ========================================================================
 
-  private async showPreview(filePath: string): Promise<void> {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const lines = content.split("\n");
-    const maxInline = this.options.previewPageLines ?? 40;
-
-    if (lines.length <= maxInline) {
-      // Short enough to show inline
-      console.log("\n" + "─".repeat(60));
-      console.log(content);
-      console.log("─".repeat(60) + "\n");
-      return;
-    }
-
-    // Large file — offer pagination options
-    const { action } = await inquirer.prompt<{ action: string }>([
-      {
-        type: "list",
-        name: "action",
-        message: `Preview: ${path.basename(filePath)} (${lines.length} lines)`,
-        choices: [
-          {
-            name: `View first ${maxInline} lines`,
-            value: "head",
-          },
-          {
-            name: `View last ${maxInline} lines`,
-            value: "tail",
-          },
-          {
-            name: "Skip preview",
-            value: "skip",
-          },
-        ],
-      },
-    ]);
-
-    switch (action) {
-      case "head": {
-        const preview = lines.slice(0, maxInline).join("\n");
-        console.log("\n" + preview);
-        if (lines.length > maxInline) {
-          console.log(`\n... ${lines.length - maxInline} more lines ...\n`);
-        }
-        break;
-      }
-      case "tail": {
-        if (lines.length > maxInline) {
-          console.log(`\n... first ${lines.length - maxInline} lines ...\n`);
-        }
-        console.log(lines.slice(-maxInline).join("\n") + "\n");
-        break;
-      }
-      case "skip":
-      default:
-        break;
-    }
+  /** Read preview file, return a clickable path reference. */
+  private readPreview(filePath: string): string {
+    const absPath = path.resolve(filePath);
+    const stat = fs.statSync(absPath);
+    const size = formatSize(stat.size);
+    const lines = countLines(absPath);
+    return `📄 ${absPath}  (${lines} lines, ${size})`;
   }
 
   // ========================================================================
@@ -154,14 +96,23 @@ export class InquirerGatePresenter implements GatePresenter {
 
   private async presentOptions(
     gate: GateInput,
+    previewText: string,
   ): Promise<GateInput["options"][number]> {
+    // Build the prompt message: clickable path above, gate header below
+    const messageParts: string[] = [];
+    if (previewText) {
+      messageParts.push(previewText);
+    }
+    messageParts.push(gate.header);
+    const message = messageParts.join("\n\n");
+
     const { choice } = await inquirer.prompt<{
       choice: GateInput["options"][number];
     }>([
       {
         type: "list",
         name: "choice",
-        message: gate.header,
+        message,
         choices: gate.options.map((opt) => ({
           name: `${opt.label} — ${opt.description}`,
           value: opt,
@@ -269,4 +220,15 @@ class TimeoutError extends Error {
     super(`Gate timed out after ${ms}ms`);
     this.name = "TimeoutError";
   }
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function countLines(filePath: string): number {
+  const content = fs.readFileSync(filePath, "utf-8");
+  return content.split("\n").length;
 }

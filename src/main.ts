@@ -32,6 +32,7 @@ import {
   findResumableWorkflows,
   resumeWorkflow,
 } from "./cli/resume.ts";
+import inquirer from "inquirer";
 
 import type { AgentRunner, GatePresenter } from "./orchestrator/ports.ts";
 
@@ -53,6 +54,11 @@ const ExitCode = {
 // ============================================================================
 
 async function main(): Promise<void> {
+  // Clear npm preamble noise
+  if (!process.argv.includes("--no-clear")) {
+    console.clear();
+  }
+
   // ── 1. Parse CLI arguments ────────────────────────────────────
   const parsed = parseArgs(process.argv.slice(2));
   if ("error" in parsed) {
@@ -119,6 +125,25 @@ async function main(): Promise<void> {
   const runnerName = merged.runner;
   const gateName = args.yes ? "auto-approve" : merged.gate;
 
+  // ── 6. Auto-detect resumable workflows ────────────────────────
+  // If --resume wasn't explicitly passed, check for in-progress
+  // workflows and offer to resume instead of starting fresh.
+  if (!args.resume) {
+    const pending = findResumableWorkflows(args.projectRoot);
+    if (pending.length > 0) {
+      const info = resumeWorkflow(pending[0]);
+      const { resume: shouldResume } = await inquirer.prompt<{ resume: boolean }>([{
+        type: "confirm",
+        name: "resume",
+        message: `Found in-progress workflow "${info.featureName}" (step ${info.currentStepIndex + 1}: ${info.currentStepAgent}). Resume?`,
+        default: true,
+      }]);
+      if (shouldResume) {
+        args.resume = true; // redirect to resume path below
+      }
+    }
+  }
+
   // ── 6. Handle --resume ────────────────────────────────────────
   if (args.resume) {
     const workflows = findResumableWorkflows(args.projectRoot);
@@ -182,6 +207,7 @@ async function main(): Promise<void> {
     const agentRunner = createAgentRunner(runnerName, auth, registry);
     const gatePresenter = createGatePresenter(gateName);
 
+    console.clear();
     const outcome = await runFlow({
       flow: flowDef,
       featureName: info.featureName,
@@ -250,18 +276,14 @@ async function main(): Promise<void> {
   // Runtime API key override (highest priority, not persisted)
   if (args.provider && args.apiKey) {
     auth.setRuntimeApiKey(args.provider, args.apiKey);
-    console.log(`Using --api-key for provider "${args.provider}"`);
   }
 
   const registry = ModelRegistry.create(auth);
   const agentRunner = createAgentRunner(runnerName, auth, registry);
   const gatePresenter = createGatePresenter(gateName);
 
-  console.log(`\nRunner: ${runnerName}`);
-  console.log(`Gate:   ${gateName}`);
-  console.log(`Flow:   ${flowDef.id} (${flowDef.steps.length} steps)\n`);
-
   // ── 11. Run flow ──────────────────────────────────────────────
+  console.clear();
   const outcome = await runFlow({
     flow: flowDef,
     featureName,
@@ -285,11 +307,6 @@ function handleOutcome(outcome: {
   status: string;
   state: { build_status?: string };
 }): never {
-  console.log(`\nFlow outcome: ${outcome.status}`);
-  if (outcome.state.build_status) {
-    console.log(`Build status: ${outcome.state.build_status}`);
-  }
-
   switch (outcome.status) {
     case "done":
       process.exit(ExitCode.Success);

@@ -21,11 +21,11 @@ export const FEATURE_BUILD_FLOW: FlowDefinition = {
   description: "Full product feature build from analysis to completion docs",
   steps: [
     { agent: "spec-write", requestApproval: true },
-    { agent: "plan" },
+    // { agent: "plan" },
     { agent: "implement", attempts: 2 },
     { agent: "review", requestApproval: true },
     { agent: "lint" },
-    { agent: "doc-sync", attempts: 2 },
+    // { agent: "doc-sync", attempts: 2 },
   ],
 };
 

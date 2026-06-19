@@ -42,8 +42,10 @@ Usage:
 Options:
   --flow <id>       Flow to run (default: feature-build)
                     Use --list-flows to see available flows
-  --runner <name>   Agent backend (default: pi-interactive)
+  --runner <name>   Agent backend (default: pi-sdk)
                     Built-in: pi-sdk, pi-interactive, claude-code
+                    pi-sdk: programmatic, streams output, auto-returns
+                    pi-interactive: full pi TUI (you must /exit after each step)
   --gate <name>     Gate presenter (default: inquirer)
                     Built-in: inquirer, auto-approve
   --resume          Resume most recent workflow in the project
@@ -74,7 +76,7 @@ export function parseArgs(raw: string[]): CliArgs | { error: string; help: strin
   const args: CliArgs = {
     projectRoot: process.cwd(),
     featureName: "default-feature",
-    runner: "pi-interactive",
+    runner: "pi-sdk",
     gate: "inquirer",
     resume: false,
     listFlows: false,

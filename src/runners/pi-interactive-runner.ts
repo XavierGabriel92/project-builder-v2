@@ -129,6 +129,8 @@ export class PiInteractiveRunner implements AgentRunner {
 
 /**
  * Resolve a "provider/modelId" string to a pi Model object.
+ * Tries pi's built-in getModel() first, then falls back to ModelRegistry.find()
+ * for custom providers configured in auth.json.
  */
 function resolveModel(modelString: string) {
   const parts = modelString.split("/");

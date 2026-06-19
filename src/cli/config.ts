@@ -97,9 +97,9 @@ export function mergeConfig(
 ): MergedCliConfig {
   return {
     runner:
-      cli.runner !== "pi-interactive"
+      cli.runner !== "pi-sdk"
         ? cli.runner
-        : (config.runner ?? "pi-interactive"),
+        : (config.runner ?? "pi-sdk"),
     gate:
       cli.gate !== "inquirer" ? cli.gate : (config.gate ?? "inquirer"),
     flowId: cli.flowId ?? config.defaultFlow ?? "feature-build",
