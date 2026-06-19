@@ -29,6 +29,15 @@ export interface AgentRunInput {
   model?: string;
   /** Files to read into context before the agent starts. */
   contextFiles?: string[];
+  /** Optional callback for live activity updates during agent execution.
+   *  Called with a human-readable message describing current activity. */
+  onActivity?: (message: string) => void;
+
+  /** Optional callback for debug-level logging during agent execution.
+   *  The orchestrator sets this when --debug is active. The runner writes
+   *  detailed per-event timing (tool calls, turns, session lifecycle) to the
+   *  same gate-debug.log file. */
+  debugLog?: (entry: string) => void;
 }
 
 export interface AgentRunResult {
@@ -38,6 +47,10 @@ export interface AgentRunResult {
   summary: string;
   /** Declared output files and whether they exist on disk. */
   expectedOutputs: Array<{ path: string; exists: boolean }>;
+  /** Model display info (e.g. "DeepSeek V4 Pro (1.0M)"). */
+  modelInfo?: string;
+  /** Thinking level used (e.g. "high", "medium", "low"). */
+  thinkingLevel?: string;
   /** Full conversation messages (for debugging, audit, doc-sync step). */
   messages?: unknown[];
   /** Error details if failed. */
@@ -145,6 +158,10 @@ export interface FlowProgress {
 
   /** Called when a step exhausts all retry attempts and the flow blocks. */
   onFlowBlocked(error: string): void;
+
+  /** Called when the agent reports current activity during execution.
+   *  Receives a human-readable message describing what the agent is doing. */
+  onStepActivity?(step: { agent: string; index: number; message: string }): void;
 
   // ── Optional hooks (no-op if not implemented) ────────────────
 

@@ -34,7 +34,7 @@ Auto-detects in-progress workflows and offers to resume. Prompts for feature nam
   "runner": "pi-sdk",
   "gate": "inquirer",
   "defaultFlow": "feature-build",
-  "model": "deepseek/deepseek-chat"
+  "model": "deepseek/deepseek-v4-pro"
 }
 ```
 

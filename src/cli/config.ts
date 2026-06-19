@@ -23,6 +23,8 @@ export interface ProjectBuilderConfig {
   agentsDir?: string;
   /** Default model for all steps. */
   model?: string;
+  /** Default thinking level (off, minimal, low, medium, high, xhigh). */
+  thinkingLevel?: string;
 }
 
 // ============================================================================
@@ -55,6 +57,7 @@ export function loadConfig(projectRoot: string): ProjectBuilderConfig {
       defaultFlow: parsed.defaultFlow,
       agentsDir: parsed.agentsDir,
       model: parsed.model,
+      thinkingLevel: parsed.thinkingLevel,
     };
   } catch (err) {
     console.warn(
@@ -73,6 +76,7 @@ export interface MergedCliConfig {
   gate: string;
   flowId: string;
   model?: string;
+  thinkingLevel?: string;
   agentsDir: string;
 }
 
@@ -90,6 +94,7 @@ export function mergeConfig(
     gate: string;
     flowId?: string;
     model?: string;
+    thinkingLevel?: string;
     agentsDir?: string;
   },
   config: ProjectBuilderConfig,
@@ -104,6 +109,7 @@ export function mergeConfig(
       cli.gate !== "inquirer" ? cli.gate : (config.gate ?? "inquirer"),
     flowId: cli.flowId ?? config.defaultFlow ?? "feature-build",
     model: cli.model ?? config.model,
+    thinkingLevel: cli.thinkingLevel ?? config.thinkingLevel,
     agentsDir:
       cli.agentsDir ?? config.agentsDir ?? defaultAgentsDir,
   };

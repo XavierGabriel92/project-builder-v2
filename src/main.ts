@@ -116,6 +116,7 @@ async function main(): Promise<void> {
       gate: args.gate,
       flowId: args.flowId,
       model: args.model,
+      thinkingLevel: args.thinkingLevel,
       agentsDir: args.agentsDir,
     },
     config,
@@ -204,7 +205,7 @@ async function main(): Promise<void> {
       auth.setRuntimeApiKey(args.provider, args.apiKey);
     }
     const registry = ModelRegistry.create(auth);
-    const agentRunner = createAgentRunner(runnerName, auth, registry);
+    const agentRunner = createAgentRunner(runnerName, auth, registry, { thinkingLevel: merged.thinkingLevel });
     const gatePresenter = createGatePresenter(gateName);
 
     console.clear();
@@ -281,7 +282,7 @@ async function main(): Promise<void> {
   }
 
   const registry = ModelRegistry.create(auth);
-  const agentRunner = createAgentRunner(runnerName, auth, registry);
+  const agentRunner = createAgentRunner(runnerName, auth, registry, { thinkingLevel: merged.thinkingLevel });
   const gatePresenter = createGatePresenter(gateName);
 
   // ── 11. Run flow ──────────────────────────────────────────────

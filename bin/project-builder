@@ -2,7 +2,7 @@
 # project-builder — launch the flow orchestrator from anywhere
 #
 # Defaults (user --flags override these):
-#   --model deepseek/deepseek-chat
+#   --model deepseek/deepseek-v4-pro
 #   --runner pi-sdk
 #
 # Usage:
@@ -27,6 +27,6 @@ fi
 MAIN="$SCRIPT_DIR/../src/main.ts"
 
 exec node --experimental-strip-types "$MAIN" \
-  --model deepseek/deepseek-chat \
+  --model deepseek/deepseek-v4-pro \
   --runner pi-sdk \
   "$@"

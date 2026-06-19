@@ -6,14 +6,29 @@
 
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
+/** Maximum characters for a summary line in the console. */
+const MAX_SUMMARY_LEN = 240;
+
+/** Fluff prefixes the agent often emits that we strip from summaries. */
+const FLUFF_PATTERNS = [
+  /^Let me provide a quick summary[.:]?\s*/i,
+  /^Here'?s?( a)? (quick )?summary[.:]?\s*/i,
+  /^Summary[.:]?\s*/i,
+  /^\*\*Summary\*\*[.:]?\s*/i,
+  /^##\s+Summary\s*/i,
+  /^##\s+Implementation Complete\s*✅?\s*/i,
+  /^All tasks are complete[.!]?\s*/i,
+  /^All files are in place[.!]?\s*/i,
+];
+
 /**
  * Extract a human-readable summary from the agent's conversation messages.
  *
- * Looks for the last assistant message, extracts text content, and falls back
- * to listing tool names if no text is present.
+ * Looks for the last assistant message, extracts text content, strips
+ * markdown, removes common fluff, and truncates to a readable length.
  *
  * @param messages - Full conversation messages from the agent session.
- * @returns A summary string, truncated to 300 characters.
+ * @returns A clean, single-line summary string.
  */
 export function extractSummary(messages: AgentMessage[]): string {
   const lastAssistant = [...messages].reverse().find(
@@ -30,11 +45,21 @@ export function extractSummary(messages: AgentMessage[]): string {
       typeof c === "object" && c !== null && "type" in c && c.type === "text",
   );
 
-  const combined = textBlocks.map((t) => t.text).join("\n").trim();
+  let combined = textBlocks.map((t) => t.text).join("\n").trim();
   if (combined) {
-    return combined.length > 300
-      ? combined.slice(0, 297) + "..."
-      : combined;
+    // Strip markdown formatting
+    combined = stripMarkdown(combined);
+    // Strip common fluff prefixes
+    for (const pattern of FLUFF_PATTERNS) {
+      combined = combined.replace(pattern, "");
+    }
+    // Collapse whitespace to a clean single line
+    combined = combined.replace(/\s+/g, " ").trim();
+    // Truncate
+    if (combined.length > MAX_SUMMARY_LEN) {
+      combined = combined.slice(0, MAX_SUMMARY_LEN - 3) + "...";
+    }
+    return combined || "Agent completed";
   }
 
   // Fall back to listing tool names
@@ -50,4 +75,28 @@ export function extractSummary(messages: AgentMessage[]): string {
   }
 
   return "Agent completed";
+}
+
+/** Strip common markdown formatting from text for plain display. */
+function stripMarkdown(text: string): string {
+  return text
+    // Headings
+    .replace(/^#{1,6}\s+/gm, "")
+    // Bold / italic
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
+    .replace(/_{1,3}([^_]+)_{1,3}/g, "$1")
+    // Inline code
+    .replace(/`([^`]+)`/g, "$1")
+    // Links: keep text, drop URL
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    // Blockquotes
+    .replace(/^>\s?/gm, "")
+    // Horizontal rules
+    .replace(/^[-*_]{3,}\s*$/gm, "")
+    // List markers
+    .replace(/^[\s]*[-*+]\s/gm, "")
+    .replace(/^\d+\.\s/gm, "")
+    // Emoji (basic)
+    .replace(/✅|❌|⚠️|📁|🔒|🚀|💡|📝|🔧|✓|✗/g, "")
+    .trim();
 }

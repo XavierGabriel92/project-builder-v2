@@ -279,6 +279,7 @@ async function executeStep(
 
     // ── Build prompt with retry feedback ───────────────────────
     let prompt = buildPrompt(agent, state);
+    debugLog(`BUILD PROMPT step=${agent.manifest.id} length=${prompt.length}`);
     if (feedbackForRetry) {
       // Inject feedback prominently — BEFORE the agent instructions,
       // not after the completion suffix where it would be ignored.
@@ -292,13 +293,27 @@ async function executeStep(
       ?? state.flow_snapshot.defaultModel
       ?? undefined;
 
+    debugLog(`RUNNER INVOKE step=${agent.manifest.id} attempt=${attempt} model=${model ?? "(default)"} tools=[${agent.manifest.tools.join(", ")}] promptSize=${prompt.length}`);
+    const runnerStart = Date.now();
+
     const result = await agentRunner.run({
       prompt,
       systemPrompt: buildSystemPrefix(state),
       tools: agent.manifest.tools,
       cwd: projectRoot,
       model,
+      onActivity: (message: string) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message,
+        });
+      },
+      debugLog,
     });
+
+    const runnerElapsed = ((Date.now() - runnerStart) / 1000).toFixed(1);
+    debugLog(`RUNNER RESULT step=${agent.manifest.id} elapsed=${runnerElapsed}s success=${result.success} summary="${result.summary.slice(0, 120)}${result.summary.length > 120 ? '...' : ''}" model=${result.modelInfo ?? "?"} ${result.thinkingLevel ?? ""}`);
 
     progress?.onStepEnd({ agent: flowStep.agent, index: state.current_step_index, result });
 
@@ -313,6 +328,7 @@ async function executeStep(
           gateLoader,
         );
         state = transition.state;
+        debugLog(`STATE step=${agent.manifest.id} status=error action=retry attempt=${attempt}/${maxAttempts} error="${result.error.slice(0, 120)}${result.error.length > 120 ? '...' : ''}"`);
         continue;
       }
       // No retries left → block
@@ -321,6 +337,7 @@ async function executeStep(
         { result: "error", message: result.error ?? "Step failed", retryable: false },
         gateLoader,
       );
+      debugLog(`STATE step=${agent.manifest.id} status=error action=block attempt=${attempt}/${maxAttempts} error="${(result.error ?? 'Step failed').slice(0, 120)}"`);
       return transition.state;
     }
 
@@ -331,6 +348,7 @@ async function executeStep(
       outputs.map(o => path.join(workflowDir, o)),
       workflowDir,
     );
+    debugLog(`VERIFY OUTPUTS step=${agent.manifest.id} expected=[${outputs.join(", ")}] missing=[${verification.missing.join(", ")}] allExist=${verification.allExist} strictOutputs=${strictOutputs}`);
 
     if (!verification.allExist) {
       if (strictOutputs) {
@@ -344,6 +362,7 @@ async function executeStep(
             gateLoader,
           );
           state = transition.state;
+          debugLog(`STATE step=${agent.manifest.id} status=error action=retry reason="missing outputs: ${missingList}" attempt=${attempt}/${maxAttempts}`);
           continue;
         }
         // No retries left → block
@@ -352,12 +371,14 @@ async function executeStep(
           { result: "error", message: `Missing outputs: ${verification.missing.join(", ")}`, retryable: false },
           gateLoader,
         );
+        debugLog(`STATE step=${agent.manifest.id} status=error action=block reason="missing outputs: ${verification.missing.join(", ")}"`);
         return transition.state;
       } else {
         // Non-strict mode: warn about missing outputs but don't block
         if (progress && verification.missing.length > 0) {
           console.warn(`Warning: expected outputs missing (non-strict mode): ${verification.missing.join(", ")}`);
         }
+        debugLog(`STATE step=${agent.manifest.id} status=non-strict-missing missing=[${verification.missing.join(", ")}]`);
       }
     }
 
@@ -372,6 +393,8 @@ async function executeStep(
       gateLoader,
     );
     state = transition.state;
+    debugLog(`STATE step=${agent.manifest.id} status=completed action=${transition.action} nextStepIndex=${state.current_step_index} nextAgent=${state.steps[state.current_step_index]?.agent ?? "(done)"}`);
+
 
     // ── Gate? ──────────────────────────────────────────────────
     if (flowStep.requestApproval && agent.manifest.approval && state.gate) {

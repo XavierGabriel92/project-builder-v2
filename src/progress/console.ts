@@ -18,6 +18,14 @@ export class ConsoleProgress implements FlowProgress {
   private stepList: Array<{ agent: string; status: "completed" | "running" | "pending" }> = [];
   private flowHeader = "";
   private stepsRendered = false;
+  /** Latest activity message from the running agent (cleared on step end). */
+  private currentActivity = "";
+  /** Accumulated step summaries keyed by step index (shown under completed steps). */
+  private stepEndInfo: Array<{ index: number; summary: string }> = [];
+  /** Model info from the most recent step result (e.g. "DeepSeek V4 Pro (1.0M)"). */
+  private currentModelInfo = "";
+  /** Thinking level from the most recent step result (e.g. "high"). */
+  private currentThinkingLevel = "";
 
   // ── Required lifecycle hooks ─────────────────────────────────
 
@@ -37,6 +45,7 @@ export class ConsoleProgress implements FlowProgress {
     const retry = step.attempt > 1 ? ` (retry ${step.attempt})` : "";
     this.currentStepLabel = `${step.agent}${retry}`;
     this.currentStepStart = Date.now();
+    this.currentActivity = "";
     this.stepStartTimes.set(step.agent + step.index, Date.now());
 
     // Update step status in the list and re-render
@@ -57,14 +66,28 @@ export class ConsoleProgress implements FlowProgress {
         this.flowHeader,
         "",
       ];
-      for (const s of this.stepList) {
+      for (let i = 0; i < this.stepList.length; i++) {
+        const s = this.stepList[i];
         if (s.status === "completed") {
           lines.push(`  ✓ ${s.agent}`);
+          // Show summary stored from onStepEnd
+          const info = this.stepEndInfo.find(e => e.index === i);
+          if (info) {
+            lines.push(`     ${info.summary}`);
+          }
         } else if (s.status === "running") {
           lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent}  (${elapsed})`);
+          // Show live activity below the running step
+          if (this.currentActivity) {
+            lines.push(`     └─ ${this.currentActivity}`);
+          }
         } else {
           lines.push(`  ○ ${s.agent}`);
         }
+      }
+      // Footer: model + thinking level
+      if (this.currentModelInfo) {
+        lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel));
       }
       process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
       frame = (frame + 1) % SPINNER_FRAMES.length;
@@ -79,6 +102,7 @@ export class ConsoleProgress implements FlowProgress {
       clearInterval(this.spinnerInterval);
       this.spinnerInterval = null;
     }
+    this.currentActivity = "";
 
     const key = step.agent + step.index;
     const start = this.stepStartTimes.get(key);
@@ -94,6 +118,17 @@ export class ConsoleProgress implements FlowProgress {
     }
 
     if (step.result.success) {
+      // Store summary for display after the step list
+      if (step.result.summary) {
+        this.stepEndInfo.push({ index: step.index, summary: step.result.summary });
+      }
+      // Capture model info for footer display
+      if (step.result.modelInfo) {
+        this.currentModelInfo = step.result.modelInfo;
+      }
+      if (step.result.thinkingLevel) {
+        this.currentThinkingLevel = step.result.thinkingLevel;
+      }
       // Render final static state with the step marked completed
       this.renderHeader();
     } else {
@@ -152,6 +187,12 @@ export class ConsoleProgress implements FlowProgress {
 
   // ── Rendering ──────────────────────────────────────────────
 
+  /** Called when the agent reports current activity during execution.
+   *  The activity string is picked up by the next spinner frame render. */
+  onStepActivity(_step: { agent: string; index: number; message: string }): void {
+    this.currentActivity = _step.message;
+  }
+
   /** Clear + render header + static step list (no spinner).
    *  Builds entire output as a single string for atomic write — see onStepStart
    *  for the rationale (split writes cause terminal interleaving / duplication). */
@@ -160,14 +201,24 @@ export class ConsoleProgress implements FlowProgress {
       this.flowHeader,
       "",
     ];
-    for (const s of this.stepList) {
+    for (let i = 0; i < this.stepList.length; i++) {
+      const s = this.stepList[i];
       if (s.status === "completed") {
         lines.push(`  ✓ ${s.agent}`);
+        // Show summary stored from onStepEnd
+        const info = this.stepEndInfo.find(e => e.index === i);
+        if (info) {
+          lines.push(`     ${info.summary}`);
+        }
       } else if (s.status === "running") {
         lines.push(`  ⠿ ${s.agent}`);
       } else {
         lines.push(`  ○ ${s.agent}`);
       }
+    }
+    // Footer: model + thinking level
+    if (this.currentModelInfo) {
+      lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel));
     }
     process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
   }
@@ -202,4 +253,12 @@ function formatDuration(ms: number): string {
   return remainingSecs > 0
     ? `${minutes}m ${remainingSecs}s`
     : `${minutes}m`;
+}
+
+/** Build the footer line showing model and thinking level. */
+function buildFooter(modelInfo: string, thinkingLevel: string): string {
+  const model = `[${modelInfo}]`;
+  return thinkingLevel
+    ? `\n  ${model} ${thinkingLevel}`
+    : `\n  ${model}`;
 }

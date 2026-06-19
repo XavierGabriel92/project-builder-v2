@@ -24,14 +24,15 @@ import { AutoApproveGate } from "../gates/noop-gate.ts";
  * @param name - Runner name (e.g. "pi-sdk", "pi-interactive", "claude-code")
  * @param authStorage - AuthStorage instance (for pi-sdk)
  * @param modelRegistry - ModelRegistry instance (for pi-sdk)
- * @param options - Runner-specific options (timeout, stream, claudePath, etc.)
+ * @param options - Runner-specific options (timeout, stream, claudePath, thinkingLevel, etc.)
  */
 export function createAgentRunner(
   name: string,
   authStorage: AuthStorage,
   modelRegistry: ModelRegistry,
+  options?: Record<string, unknown>,
 ): AgentRunner {
-  return createRunner(name, authStorage, modelRegistry);
+  return createRunner(name, authStorage, modelRegistry, options);
 }
 
 // ============================================================================

@@ -310,6 +310,6 @@ export interface GateAnswer {
 // ============================================================================
 
 export const SCHEMA_VERSION = 1;
-export const DEFAULT_ATTEMPTS = 1;
+export const DEFAULT_ATTEMPTS = 50;
 export const WORKFLOW_FILE = "workflow.json";
 export const TEMP_DIR = ".temp";

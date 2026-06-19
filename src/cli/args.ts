@@ -26,6 +26,7 @@ export interface CliArgs {
   debug: boolean; // --debug (write gate-debug.log)
   agentsDir?: string; // --agents-dir <path>
   model?: string; // --model <provider/id>
+  thinkingLevel?: string; // --thinking-level <off|minimal|low|medium|high|xhigh>
   provider?: string; // --provider <name> (e.g. anthropic, openai)
   apiKey?: string; // --api-key <key> (runtime override, not persisted)
 }
@@ -54,6 +55,7 @@ Options:
   --yes, -y         Auto-approve all gates (CI mode)
   --debug           Write gate-debug.log with step-by-step trace
   --model <id>      Default model for all steps (provider/model)
+  --thinking-level <level>  Thinking level (off, minimal, low, medium, high, xhigh)
   --provider <name>  LLM provider (anthropic, openai, google, deepseek, etc.)
   --api-key <key>    API key for the provider (runtime only, not persisted)
   --agents-dir      Path to agents/ directory
@@ -121,6 +123,9 @@ export function parseArgs(raw: string[]): CliArgs | { error: string; help: strin
         break;
       case "--model":
         args.model = raw[++i] ?? "";
+        break;
+      case "--thinking-level":
+        args.thinkingLevel = raw[++i] ?? "";
         break;
       case "--provider":
         args.provider = raw[++i] ?? "";

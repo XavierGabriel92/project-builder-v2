@@ -31,7 +31,9 @@ If AGENTS.md has no repository map, look in these conventional locations:
 
 ### 1b. Read every doc found
 
-Read each one fully. As you read, extract every **concrete, checkable rule.**
+Read each one fully. **Batch reads:** read ALL docs in a single turn — do not read one at a time.
+
+As you read, extract every **concrete, checkable rule.**
 A rule is checkable if you can write a grep command or a manual inspection
 that produces a yes/no answer.
 
@@ -89,9 +91,20 @@ Run every check from Phase 1b against the changed files.
 
 ### For grep-able rules → run them now
 
-Run each grep command against the changed files from `implementation-notes.md`.
-If the rule applies project-wide (not just to changed files), run against the
-full source tree.
+**CRITICAL — Batch all checks into ONE bash invocation.** Combine ALL grep and
+structural checks into a SINGLE compound bash command. Chain them with `|| true`
+so one non-match doesn't abort the rest. Never run greps one at a time.
+
+Example:
+```bash
+(grep -rn 'pattern1' file1 file2) || true
+(grep -rn 'pattern2' src/) || true
+echo "ALL_CHECKS_DONE"
+```
+
+Run this single compound command against the changed files from
+`implementation-notes.md`. If a rule applies project-wide (not just to changed
+files), run that grep against the full source tree.
 
 ### For manual rules → spot-check
 

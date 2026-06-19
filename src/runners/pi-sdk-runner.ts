@@ -21,11 +21,16 @@ import {
 import type { AgentRunner, AgentRunInput, AgentRunResult } from "../orchestrator/ports.ts";
 import { extractSummary } from "./shared.ts";
 
+/** Valid thinking levels for the Pi agent session. */
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
 export interface PiSdkRunnerOptions {
   authStorage: ReturnType<typeof AuthStorage.create>;
   modelRegistry: ReturnType<typeof ModelRegistry.create>;
   /** Default model when no per-step override is specified (provider/id string, e.g. "anthropic/claude-sonnet-4-5"). */
   defaultModel?: string;
+  /** Default thinking level for all agent sessions (off, minimal, low, medium, high, xhigh). */
+  thinkingLevel?: ThinkingLevel;
   /** Whether to stream agent output to stdout. */
   stream?: boolean;
   /** Timeout in ms for the entire agent run. Default: no timeout. */
@@ -38,6 +43,7 @@ export class PiSdkRunner implements AgentRunner {
   private authStorage: ReturnType<typeof AuthStorage.create>;
   private modelRegistry: ReturnType<typeof ModelRegistry.create>;
   private defaultModel: string | undefined;
+  private thinkingLevel: ThinkingLevel | undefined;
   private stream: boolean;
   private timeout: number | undefined;
 
@@ -45,11 +51,15 @@ export class PiSdkRunner implements AgentRunner {
     this.authStorage = options.authStorage;
     this.modelRegistry = options.modelRegistry;
     this.defaultModel = options.defaultModel;
+    this.thinkingLevel = options.thinkingLevel;
     this.stream = options.stream ?? false;
     this.timeout = options.timeout;
   }
 
   async run(input: AgentRunInput): Promise<AgentRunResult> {
+    const dl = input.debugLog;
+    const sessionStart = Date.now();
+
     // ── Resolve model ─────────────────────────────────────────
     const modelString = input.model ?? this.defaultModel;
     const model = modelString ? resolveModel(modelString, this.modelRegistry) : undefined;
@@ -65,6 +75,9 @@ export class PiSdkRunner implements AgentRunner {
       }
       // No model specified at all — let createAgentSession pick its default
     }
+
+    dl?.(`RUNNER CREATE SESSION start`);
+    const createStart = Date.now();
 
     // ── Build prompt with context files ───────────────────────
     let finalPrompt = input.prompt;
@@ -101,22 +114,80 @@ export class PiSdkRunner implements AgentRunner {
       authStorage: this.authStorage,
       modelRegistry: this.modelRegistry,
       model,
+      thinkingLevel: this.thinkingLevel,
       cwd: input.cwd,
       tools: input.tools,
       resourceLoader,
     });
 
-    // ── Stream output for observability ───────────────────────
-    if (this.stream) {
-      session.subscribe((event) => {
-        if (
-          event.type === "message_update" &&
-          event.assistantMessageEvent.type === "text_delta"
-        ) {
-          process.stdout.write(event.assistantMessageEvent.delta);
+    dl?.(`RUNNER CREATE SESSION end duration=${Date.now() - createStart}ms`);
+
+    // ── Model info for display ────────────────────────────
+    // Prefer the resolved model's display name + context window.
+    // Fall back to the raw model string, then session.model.
+    const resolvedModel = model ?? session.model;
+    const modelInfo = resolvedModel
+      ? `${resolvedModel.name} (${formatContextWindow(resolvedModel.contextWindow)})`
+      : modelString
+        ? modelString
+        : undefined;
+    const thinkingLevel = session.thinkingLevel || this.thinkingLevel;
+    dl?.(`RUNNER MODEL ${modelInfo ?? "(unknown)"} thinkingLevel=${thinkingLevel ?? "(none)"}`);
+    dl?.(`RUNNER PROMPT ${finalPrompt.length} chars`);
+
+    // ── Track tool call timing ────────────────────────────
+    let activeTool: { name: string; start: number } | null = null;
+    let toolCallCount = 0;
+
+    // ── Stream output + activity for observability ──────────
+    session.subscribe((event) => {
+      if (event.type === "message_update") {
+        const detail = event.assistantMessageEvent;
+        if (detail.type === "text_delta" && this.stream) {
+          process.stdout.write(detail.delta);
+        } else if (detail.type === "toolcall_start" || detail.type === "toolcall_delta") {
+          // Tool call being streamed — report the tool name if available
+          const toolName = (detail as Record<string, unknown>).toolName as string;
+          if (toolName) {
+            input.onActivity?.(`using ${toolName}`);
+          }
         }
-      });
-    }
+      } else if (event.type === "tool_execution_start") {
+        // Top-level tool execution event (pi SDK programmatic mode)
+        // Log completion of previous tool (if any)
+        if (activeTool) {
+          const prevDuration = Date.now() - activeTool.start;
+          dl?.(`RUNNER TOOL END ${activeTool.name} duration=${prevDuration}ms`);
+        }
+        input.onActivity?.(`using ${event.toolName}`);
+        const sessionElapsed = ((Date.now() - sessionStart) / 1000).toFixed(1);
+        toolCallCount++;
+        dl?.(`RUNNER TOOL START ${event.toolName} elapsed=${sessionElapsed}s toolCall=${toolCallCount}`);
+        activeTool = { name: event.toolName, start: Date.now() };
+      } else if (event.type === "turn_end") {
+        // Log completion of the last tool before this turn ended
+        if (activeTool) {
+          const prevDuration = Date.now() - activeTool.start;
+          dl?.(`RUNNER TOOL END ${activeTool.name} duration=${prevDuration}ms`);
+          activeTool = null;
+        }
+        // Extract tool names from the completed turn message
+        const msg = event.message;
+        if (msg?.content && Array.isArray(msg.content)) {
+          const toolCalls = msg.content.filter(
+            (c: unknown) => typeof c === "object" && c !== null && (c as Record<string, unknown>).type === "tool_use"
+          );
+          if (toolCalls.length > 0) {
+            const names = toolCalls.map((t: unknown) => (t as Record<string, unknown>).name).filter(Boolean);
+            if (names.length > 0) {
+              input.onActivity?.(`using ${names.join(", ")}`);
+            }
+          }
+        }
+        const turnElapsed = ((Date.now() - sessionStart) / 1000).toFixed(1);
+        dl?.(`RUNNER TURN END elapsed=${turnElapsed}s`);
+      }
+    });
 
     // ── Timeout support ───────────────────────────────────────
     const controller = new AbortController();
@@ -130,15 +201,21 @@ export class PiSdkRunner implements AgentRunner {
       await session.prompt(finalPrompt);
 
       const messages = session.agent.state.messages;
+      const totalElapsed = ((Date.now() - sessionStart) / 1000).toFixed(1);
+      dl?.(`RUNNER DONE totalElapsed=${totalElapsed}s toolCalls=${toolCallCount} success=true`);
 
       return {
         success: true,
         summary: extractSummary(messages),
         expectedOutputs: [],
+        modelInfo,
+        thinkingLevel,
         messages,
       };
     } catch (err) {
+      const totalElapsed = ((Date.now() - sessionStart) / 1000).toFixed(1);
       if ((err as Error).name === "AbortError" || controller.signal.aborted) {
+        dl?.(`RUNNER DONE totalElapsed=${totalElapsed}s toolCalls=${toolCallCount} success=false reason=timeout`);
         return {
           success: false,
           summary: `Agent timed out after ${this.timeout}ms`,
@@ -146,6 +223,7 @@ export class PiSdkRunner implements AgentRunner {
           error: `Timeout after ${this.timeout}ms`,
         };
       }
+      dl?.(`RUNNER DONE totalElapsed=${totalElapsed}s toolCalls=${toolCallCount} success=false reason="${(err as Error).message.slice(0, 100)}"`);
       return {
         success: false,
         summary: "Agent execution failed",
@@ -182,6 +260,17 @@ function resolveModel(
     return modelRegistry.find(provider, id) ?? undefined;
   }
   return undefined;
+}
+
+/** Format context window size to human-readable (e.g. 1000000 → "1.0M"). */
+function formatContextWindow(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${(tokens / 1_000_000).toFixed(1)}M`;
+  }
+  if (tokens >= 1_000) {
+    return `${Math.round(tokens / 1_000)}K`;
+  }
+  return String(tokens);
 }
 
 
