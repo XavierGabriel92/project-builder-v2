@@ -1,0 +1,19 @@
+{
+  "name": "project-builder-v2",
+  "version": "0.1.0",
+  "description": "Layered flow orchestration engine — invoke agents programmatically via swappable backends",
+  "type": "module",
+  "main": "src/main.ts",
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "test": "echo \"Tests not yet implemented\" && exit 0"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "inquirer": "^12.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

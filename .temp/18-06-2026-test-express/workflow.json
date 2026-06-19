@@ -1,0 +1,93 @@
+{
+  "schema_version": 1,
+  "feature": "test express",
+  "feature_path": "18-06-2026-test-express",
+  "project_root": "/Users/gabrielxavier/Documents/project-builder-v2",
+  "flow_id": "feature-build",
+  "flow_version": 6,
+  "flow_snapshot": {
+    "id": "feature-build",
+    "version": 6,
+    "description": "Full product feature build from analysis to completion docs",
+    "steps": [
+      {
+        "agent": "spec-write",
+        "requestApproval": true
+      },
+      {
+        "agent": "plan"
+      },
+      {
+        "agent": "implement",
+        "attempts": 2
+      },
+      {
+        "agent": "review",
+        "requestApproval": true
+      },
+      {
+        "agent": "lint"
+      },
+      {
+        "agent": "doc-sync",
+        "attempts": 2
+      }
+    ]
+  },
+  "current_step_index": 0,
+  "status": "in_progress",
+  "awaiting": null,
+  "steps": [
+    {
+      "index": 0,
+      "id": "spec-write",
+      "agent": "spec-write",
+      "status": "running",
+      "attempt": 1,
+      "started_at": "2026-06-19T00:30:38.894Z",
+      "activity": {
+        "status": "working",
+        "phase": "done",
+        "message": "spec.md written — Quick classification, 4 requirements, 2 files",
+        "updated_at": "2026-06-19T00:32:17.680Z"
+      }
+    },
+    {
+      "index": 1,
+      "id": "plan",
+      "agent": "plan",
+      "status": "pending",
+      "attempt": 0
+    },
+    {
+      "index": 2,
+      "id": "implement",
+      "agent": "implement",
+      "status": "pending",
+      "attempt": 0
+    },
+    {
+      "index": 3,
+      "id": "review",
+      "agent": "review",
+      "status": "pending",
+      "attempt": 0
+    },
+    {
+      "index": 4,
+      "id": "lint",
+      "agent": "lint",
+      "status": "pending",
+      "attempt": 0
+    },
+    {
+      "index": 5,
+      "id": "doc-sync",
+      "agent": "doc-sync",
+      "status": "pending",
+      "attempt": 0
+    }
+  ],
+  "feature_context": "express app to test a get api without db and vllidations",
+  "build_status": null
+}
