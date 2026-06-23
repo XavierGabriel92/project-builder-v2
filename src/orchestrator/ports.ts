@@ -38,6 +38,28 @@ export interface AgentRunInput {
    *  detailed per-event timing (tool calls, turns, session lifecycle) to the
    *  same gate-debug.log file. */
   debugLog?: (entry: string) => void;
+
+  /**
+   * When present, the runner MUST continue the existing session instead of
+   * creating a new one. The runner returns this ID in AgentRunResult.sessionId
+   * after the first invocation, and the orchestrator passes it back on retries.
+   * Same agent + same step = same session.
+   */
+  sessionId?: string;
+
+  /**
+   * Path to a persisted session JSONL file. Used on resume after a crash —
+   * the runner reloads the session from disk and continues where it left off.
+   * Only set on the first run after resume; subsequent retries use sessionId.
+   */
+  sessionFile?: string;
+
+  /**
+   * Workflow output directory (.temp/{featurePath}). The runner stores
+   * session files here in .memory/ so they're co-located with workflow.json
+   * and cleaned up when .temp/ is deleted.
+   */
+  workflowDir?: string;
 }
 
 export interface AgentRunResult {
@@ -45,8 +67,6 @@ export interface AgentRunResult {
   success: boolean;
   /** Human-readable summary of what happened (used in step activity messages). */
   summary: string;
-  /** Declared output files and whether they exist on disk. */
-  expectedOutputs: Array<{ path: string; exists: boolean }>;
   /** Model display info (e.g. "DeepSeek V4 Pro (1.0M)"). */
   modelInfo?: string;
   /** Thinking level used (e.g. "high", "medium", "low"). */
@@ -55,6 +75,20 @@ export interface AgentRunResult {
   messages?: unknown[];
   /** Error details if failed. */
   error?: string;
+
+  /**
+   * Opaque session identifier. The orchestrator passes this back in
+   * AgentRunInput.sessionId on retries so the runner can continue the
+   * same conversation instead of starting fresh.
+   */
+  sessionId?: string;
+
+  /**
+   * Path to the persisted session JSONL file. Written by the runner after
+   * the first invocation so the orchestrator can persist it in workflow
+   * state and reload it on resume after a crash.
+   */
+  sessionFile?: string;
 }
 
 export interface AgentRunner {
@@ -62,6 +96,13 @@ export interface AgentRunner {
   readonly name: string;
   /** Run the agent and return when it completes (or errors). */
   run(input: AgentRunInput): Promise<AgentRunResult>;
+
+  /**
+   * Release any resources held for a session. Called by the orchestrator
+   * when a step moves past retries (advance, block, or abandon).
+   * Safe to call multiple times for the same ID — must be idempotent.
+   */
+  disposeSession?(sessionId: string): void;
 }
 
 // ============================================================================
@@ -138,11 +179,11 @@ export interface FlowProgress {
     feature: string;
     totalSteps: number;
     /** Step history for resume display (agent name + status per step). */
-    steps?: Array<{ agent: string; status: "completed" | "running" | "pending" }>;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number }>;
   }): void;
 
   /** Called when a step is about to execute (fresh start or retry). */
-  onStepStart(step: { agent: string; index: number; attempt: number }): void;
+  onStepStart(step: { agent: string; index: number; attempt: number; maxAttempts: number }): void;
 
   /** Called when a step completes (success or failure). */
   onStepEnd(step: { agent: string; index: number; result: AgentRunResult }): void;

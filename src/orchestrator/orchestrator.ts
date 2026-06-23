@@ -36,6 +36,7 @@ import {
   buildPrompt,
   buildSystemPrefix,
 } from "../engine/prompt-builder.ts";
+import { discoverProjectRules } from "../engine/project-rules.ts";
 import {
   writeWorkflow,
   resolveWorkflowDir,
@@ -117,17 +118,18 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
     }
   } else {
     const featurePath = resolveFeaturePath(featureName, projectRoot);
+    const projectRulesContext = discoverProjectRules(projectRoot);
     state = createWorkflowState(
       flow, featureName, featurePath, projectRoot,
-      serviceDirs, featureContext,
+      serviceDirs, featureContext, projectRulesContext,
     );
     writeWorkflow(projectRoot, featurePath, state);
   }
 
   const workflowDir = resolveWorkflowDir(projectRoot, state.feature_path);
 
-  // ── Debug: reset log for fresh run ─────────────────────────
-  if (options.debug) {
+  // ── Debug: reset log for fresh run only — append on resume ──
+  if (options.debug && !resumeFrom) {
     fs.writeFileSync(path.join(workflowDir, "gate-debug.log"), "", "utf-8");
   }
 
@@ -196,6 +198,7 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
       status: s.status === "completed" ? "completed" as const
         : s.status === "running" ? "running" as const
         : "pending" as const,
+      maxAttempts: flow.steps[i]?.attempts ?? 1,
     })),
   });
 
@@ -211,6 +214,16 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
 
     // Persist after each step
     writeWorkflow(projectRoot, state.feature_path, state);
+
+    // Recover from stale awaiting_user without an active gate.
+    // Guards in applyStepResult and startStep handle this defensively,
+    // but the main loop should also recover so the next iteration
+    // sees a consistent state.
+    if (state.status === "awaiting_user" && !state.gate) {
+      state.status = "in_progress";
+      state.awaiting = null;
+      writeWorkflow(projectRoot, state.feature_path, state);
+    }
 
     // Check terminal states
     if (state.status === "blocked") {
@@ -269,13 +282,27 @@ async function executeStep(
   // Track feedback from gate rejections for retry injection
   let feedbackForRetry: string | undefined;
 
+  // Track the active agent session so we can reuse it across retries
+  // and dispose it when the step moves past retries.
+  let activeSessionId: string | undefined;
+
+  /** Dispose the active session if one is held. Idempotent — safe to call
+   *  multiple times or when no session is active. */
+  const disposeSession = () => {
+    if (activeSessionId && agentRunner.disposeSession) {
+      debugLog(`DISPOSE SESSION sessionId=${activeSessionId}`);
+      agentRunner.disposeSession(activeSessionId);
+      activeSessionId = undefined;
+    }
+  };
+
   debugLog(`EXECUTE STEP START step=${flowStep.agent} stepIndex=${state.current_step_index} maxAttempts=${maxAttempts} requestApproval=${flowStep.requestApproval ?? false} approval=${agent.manifest.approval ? "yes" : "NO"} status=${state.status} feedbackForRetry=${feedbackForRetry ?? "(none)"}`);
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // Mark step running in engine
     state = startStep(state);
     writeWorkflow(projectRoot, state.feature_path, state);
-    progress?.onStepStart({ agent: flowStep.agent, index: state.current_step_index, attempt });
+    progress?.onStepStart({ agent: flowStep.agent, index: state.current_step_index, attempt, maxAttempts });
 
     // ── Build prompt with retry feedback ───────────────────────
     let prompt = buildPrompt(agent, state);
@@ -293,7 +320,13 @@ async function executeStep(
       ?? state.flow_snapshot.defaultModel
       ?? undefined;
 
-    debugLog(`RUNNER INVOKE step=${agent.manifest.id} attempt=${attempt} model=${model ?? "(default)"} tools=[${agent.manifest.tools.join(", ")}] promptSize=${prompt.length}`);
+    // Determine session file for crash-resume: use the persisted file
+    // from a previous run (stored in workflow state) if this is a fresh start.
+    const resumeSessionFile = !activeSessionId
+      ? state.steps[state.current_step_index]?.agent_session_file
+      : undefined;
+
+    debugLog(`RUNNER INVOKE step=${agent.manifest.id} attempt=${attempt} model=${model ?? "(default)"} tools=[${agent.manifest.tools.join(", ")}] promptSize=${prompt.length} sessionId=${activeSessionId ?? "(new)"} sessionFile=${resumeSessionFile ?? "(none)"}`);
     const runnerStart = Date.now();
 
     const result = await agentRunner.run({
@@ -302,6 +335,9 @@ async function executeStep(
       tools: agent.manifest.tools,
       cwd: projectRoot,
       model,
+      sessionId: activeSessionId,
+      sessionFile: resumeSessionFile,
+      workflowDir,
       onActivity: (message: string) => {
         progress?.onStepActivity?.({
           agent: flowStep.agent,
@@ -311,6 +347,21 @@ async function executeStep(
       },
       debugLog,
     });
+
+    // Capture the session ID from the first run so we can reuse it on retries
+    if (!activeSessionId && result.sessionId) {
+      activeSessionId = result.sessionId;
+    }
+
+    // Persist the session file path so crash-resume can reload it
+    if (result.sessionFile) {
+      const currentStep = state.steps[state.current_step_index];
+      if (currentStep && !currentStep.agent_session_file) {
+        currentStep.agent_session_file = result.sessionFile;
+        writeWorkflow(projectRoot, state.feature_path, state);
+        debugLog(`PERSIST SESSION FILE step=${agent.manifest.id} file=${result.sessionFile}`);
+      }
+    }
 
     const runnerElapsed = ((Date.now() - runnerStart) / 1000).toFixed(1);
     debugLog(`RUNNER RESULT step=${agent.manifest.id} elapsed=${runnerElapsed}s success=${result.success} summary="${result.summary.slice(0, 120)}${result.summary.length > 120 ? '...' : ''}" model=${result.modelInfo ?? "?"} ${result.thinkingLevel ?? ""}`);
@@ -338,10 +389,13 @@ async function executeStep(
         gateLoader,
       );
       debugLog(`STATE step=${agent.manifest.id} status=error action=block attempt=${attempt}/${maxAttempts} error="${(result.error ?? 'Step failed').slice(0, 120)}"`);
+      disposeSession();
       return transition.state;
     }
 
-    // ── Verify outputs ─────────────────────────────────────────
+    // ── Verify outputs (BEFORE marking the step completed) ─────
+    // Must happen before applyStepResult("success") so that missing
+    // outputs can trigger a retry while the step is still "running".
     const strictOutputs = state.flow_snapshot.strictOutputs ?? true;
     const outputs = agent.manifest.outputs ?? [];
     const verification = outputVerifier.verify(
@@ -350,10 +404,11 @@ async function executeStep(
     );
     debugLog(`VERIFY OUTPUTS step=${agent.manifest.id} expected=[${outputs.join(", ")}] missing=[${verification.missing.join(", ")}] allExist=${verification.allExist} strictOutputs=${strictOutputs}`);
 
-    if (!verification.allExist) {
+    if (outputs.length > 0 && !verification.allExist) {
       if (strictOutputs) {
         if (attempt < maxAttempts) {
           // Outputs missing but retries remain — treat as error and retry.
+          // Step is still "running" so applyStepResult will accept the retry.
           // Keep feedbackForRetry so it's re-injected on the next attempt.
           const missingList = verification.missing.join(", ");
           const transition = applyStepResult(
@@ -372,6 +427,7 @@ async function executeStep(
           gateLoader,
         );
         debugLog(`STATE step=${agent.manifest.id} status=error action=block reason="missing outputs: ${verification.missing.join(", ")}"`);
+        disposeSession();
         return transition.state;
       } else {
         // Non-strict mode: warn about missing outputs but don't block
@@ -396,11 +452,15 @@ async function executeStep(
     debugLog(`STATE step=${agent.manifest.id} status=completed action=${transition.action} nextStepIndex=${state.current_step_index} nextAgent=${state.steps[state.current_step_index]?.agent ?? "(done)"}`);
 
 
-    // ── Gate? ──────────────────────────────────────────────────
+    // ── Gate? Persist BEFORE presenting so the gate survives crashes ──
     if (flowStep.requestApproval && agent.manifest.approval && state.gate) {
       const gateStepIndex = state.gate.stepIndex;
 
       debugLog(`GATE ENTERED step=${flowStep.agent} stepIndex=${gateStepIndex} attempt=${attempt} maxAttempts=${maxAttempts} header="${state.gate.header}"`);
+
+      // Persist the awaiting_user + gate state so the resume handler can
+      // re-present the gate if the process dies during user interaction.
+      writeWorkflow(projectRoot, state.feature_path, state);
 
       // Engine entered awaiting_user with a gate object — present it
       progress?.onGate({
@@ -436,13 +496,16 @@ async function executeStep(
       }
 
       // Approved (step completed, advanced to next) or abandoned
+      disposeSession();
       return state;
     }
 
     // No gate → step is done, break out of retry loop
+    disposeSession();
     return state;
   }
 
+  disposeSession();
   return state;
 }
 

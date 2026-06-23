@@ -15,7 +15,7 @@ export class ConsoleProgress implements FlowProgress {
   private spinnerInterval: ReturnType<typeof setInterval> | null = null;
   private currentStepLabel = "";
   private currentStepStart = 0;
-  private stepList: Array<{ agent: string; status: "completed" | "running" | "pending" }> = [];
+  private stepList: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; currentAttempt: number }> = [];
   private flowHeader = "";
   private stepsRendered = false;
   /** Latest activity message from the running agent (cleared on step end). */
@@ -33,15 +33,15 @@ export class ConsoleProgress implements FlowProgress {
     flowId: string;
     feature: string;
     totalSteps: number;
-    steps?: Array<{ agent: string; status: "completed" | "running" | "pending" }>;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number }>;
   }): void {
     this.flowStartTime = Date.now();
     this.flowHeader = `🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)`;
-    this.stepList = info.steps ?? [];
+    this.stepList = (info.steps ?? []).map(s => ({ ...s, currentAttempt: 0 }));
     this.renderHeader();
   }
 
-  onStepStart(step: { agent: string; index: number; attempt: number }): void {
+  onStepStart(step: { agent: string; index: number; attempt: number; maxAttempts: number }): void {
     const retry = step.attempt > 1 ? ` (retry ${step.attempt})` : "";
     this.currentStepLabel = `${step.agent}${retry}`;
     this.currentStepStart = Date.now();
@@ -50,7 +50,7 @@ export class ConsoleProgress implements FlowProgress {
 
     // Update step status in the list and re-render
     if (this.stepList[step.index]) {
-      this.stepList[step.index] = { ...this.stepList[step.index], status: "running" };
+      this.stepList[step.index] = { ...this.stepList[step.index], status: "running", currentAttempt: step.attempt, maxAttempts: step.maxAttempts };
     }
 
     // Animated spinner — clears + re-renders the full step list every frame
@@ -76,13 +76,18 @@ export class ConsoleProgress implements FlowProgress {
             lines.push(`     ${info.summary}`);
           }
         } else if (s.status === "running") {
-          lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent}  (${elapsed})`);
+          if( s.currentAttempt === 1){
+            lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent} - (${elapsed})`);
+          } else { 
+            lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent} - ${s.currentAttempt}/${s.maxAttempts}  (${elapsed})`);
+          }
+          
           // Show live activity below the running step
           if (this.currentActivity) {
             lines.push(`     └─ ${this.currentActivity}`);
           }
         } else {
-          lines.push(`  ○ ${s.agent}`);
+          lines.push(`  ○ ${s.agent} - 1/${s.maxAttempts}`);
         }
       }
       // Footer: model + thinking level
@@ -211,9 +216,9 @@ export class ConsoleProgress implements FlowProgress {
           lines.push(`     ${info.summary}`);
         }
       } else if (s.status === "running") {
-        lines.push(`  ⠿ ${s.agent}`);
+        lines.push(`  ⠿ ${s.agent} - ${s.currentAttempt}/${s.maxAttempts}`);
       } else {
-        lines.push(`  ○ ${s.agent}`);
+        lines.push(`  ○ ${s.agent} - 1/${s.maxAttempts}`);
       }
     }
     // Footer: model + thinking level

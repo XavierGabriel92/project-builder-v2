@@ -67,7 +67,15 @@ export function createWorkflowState(
 /** Mark the current step as running. Returns updated state. */
 export function startStep(state: WorkflowState): WorkflowState {
   const next = { ...state, steps: state.steps.map((s) => ({ ...s })) };
-  if (next.status === "awaiting_user") return next;
+  if (next.status === "awaiting_user") {
+    const cs = next.steps[next.current_step_index];
+    // Only stop if there's a real active gate for the current step.
+    // Stale status (gate already resolved) → recover and continue.
+    if (next.gate && cs && next.gate.stepIndex === cs.index) return next;
+    next.status = "in_progress";
+    next.awaiting = null;
+    next.gate = undefined;
+  }
 
   const step = next.steps[next.current_step_index];
   if (!step) return next;
@@ -175,11 +183,19 @@ export function applyStepResult(
   }
 
   if (next.status === "awaiting_user" || next.awaiting === "user_gate") {
-    return {
-      state: next,
-      action: "block",
-      error: "workflow is awaiting user approval; answer the active gate before completing another step",
-    };
+    // Only block if there's a real active gate for *this* step.
+    // Stale status (gate already resolved) → recover and continue.
+    if (next.gate && next.gate.stepIndex === step.index) {
+      return {
+        state: next,
+        action: "block",
+        error: "workflow is awaiting user approval; answer the active gate before completing another step",
+      };
+    }
+    // Stale awaiting_user without a matching gate — clean up and proceed
+    next.status = "in_progress";
+    next.awaiting = null;
+    next.gate = undefined;
   }
 
   if (step.status !== "running") {

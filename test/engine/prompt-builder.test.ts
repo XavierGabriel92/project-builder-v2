@@ -167,7 +167,7 @@ describe("buildPrompt", () => {
     const agent = makeAgent({ prompt: "do stuff" });
     const result = buildPrompt(agent, state);
     assert.match(result, /workflow will block/);
-    assert.match(result, /Do not ask what to do next/);
+    assert.match(result, /do not ask what step comes next in the workflow/i);
   });
 
   it("includes completion suffix with non-strict message", () => {

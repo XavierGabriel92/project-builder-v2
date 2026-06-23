@@ -90,6 +90,9 @@ If you find nothing, record that explicitly — this is still useful context.
 Do a fast surface-level scan. Do NOT do deep codebase reconnaissance (Phase 5
 covers that).
 
+- First, check for `AGENTS.md` at the project root (or one level deep) — this
+  is the project's agent guidance file with architecture, conventions, and rules.
+  If the prompt already includes project rules, use that as your starting context.
 - Read project identity files: `package.json` or equivalents
 - Inspect top-level directories and `README.md`
 - Note: build tools, test runner, framework, major architectural boundaries
@@ -102,6 +105,14 @@ covers that).
 This is the most important phase. You are going to ask the user **detailed,
 structured questions** across 5 mandatory dimensions. Do NOT move to Phase 5
 until you have concrete, specific answers for every applicable dimension.
+
+**⚠️ YOU MUST CALL `ask_user_question` IN THIS PHASE.** Phase 4 is NOT complete
+until you have asked at least one batch of questions covering the applicable
+dimensions. If you skip the grilling, the spec will have unresolved open
+questions marked "(blocker)" and will be rejected at the review gate. The
+`flow_step_update` phase label is just a progress marker — the actual work is
+the `ask_user_question` calls. Calling `flow_step_update` with phase "Phase 4"
+does NOT complete this phase.
 
 **How to grill:** Use `ask_user_question`. Batch related questions into groups
 of 2-4 per call. After each answer, evaluate it:
@@ -198,6 +209,14 @@ Before moving to Phase 5, apply this single test to every dimension:
 
 A dimension is DONE when a junior engineer could implement from your answers
 without asking a single follow-up question.
+
+**Before calling `flow_step_update` for Phase 5, verify this checklist:**
+- [ ] `ask_user_question` was called at least once in Phase 4
+- [ ] Dimensions A-E all have concrete answers (not "Decision needed")
+- [ ] Every error state has a user-facing message + recovery action
+- [ ] No open question remains marked "(blocker)"
+
+**If any checkbox is empty, DO NOT advance. Return to the applicable dimension and ask more questions.**
 
 ---
 

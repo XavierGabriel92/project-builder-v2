@@ -109,7 +109,6 @@ export class PiInteractiveRunner implements AgentRunner {
       return {
         success: false,
         summary: "User aborted the session",
-        expectedOutputs: [],
         error: "User aborted",
       };
     }
@@ -117,7 +116,6 @@ export class PiInteractiveRunner implements AgentRunner {
     return {
       success: true,
       summary: extractSummary(messages),
-      expectedOutputs: [],
       messages,
     };
   }

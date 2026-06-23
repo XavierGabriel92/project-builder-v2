@@ -166,7 +166,6 @@ export class ClaudeCodeRunner implements AgentRunner {
           resolve({
             success: false,
             summary: `Claude Code timed out after ${this.timeout}ms`,
-            expectedOutputs: [],
             error: `Timeout after ${this.timeout}ms`,
           });
           return;
@@ -177,13 +176,11 @@ export class ClaudeCodeRunner implements AgentRunner {
           resolve({
             success: true,
             summary,
-            expectedOutputs: [],
           });
         } else {
           resolve({
             success: false,
             summary: "Claude Code failed",
-            expectedOutputs: [],
             error: stderr || `Exit code ${code}`,
           });
         }
@@ -201,7 +198,6 @@ export class ClaudeCodeRunner implements AgentRunner {
           resolve({
             success: false,
             summary: "Claude Code CLI not found",
-            expectedOutputs: [],
             error: `Claude Code CLI not found at "${this.claudePath}". Install via: npm install -g @anthropic-ai/claude-code`,
           });
           return;
@@ -210,7 +206,6 @@ export class ClaudeCodeRunner implements AgentRunner {
         resolve({
           success: false,
           summary: "Claude Code process error",
-          expectedOutputs: [],
           error: err.message,
         });
       });

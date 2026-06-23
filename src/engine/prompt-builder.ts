@@ -139,9 +139,15 @@ function completionSuffix(strictOutputs: boolean): string {
     "to exist. " +
     blockMsg +
     "\n\n" +
+    "**CRITICAL: You MUST use the write tool to create every declared output file.** " +
+    "Do NOT merely describe what the file would contain or claim it exists — actually " +
+    "call the write tool and create it on disk. The workflow verifies file existence " +
+    "on the filesystem, not your description of it." +
+    "\n\n" +
     "## Completion\n\n" +
     "When you have finished all the work described above, stop. " +
-    "Do not ask what to do next. Do not offer to continue. " +
-    "The workflow will advance automatically."
+    "Do not ask what step comes next in the workflow — the workflow advances automatically. " +
+    "Keep using your tools (including ask_user_question, write, subagent) as instructed " +
+    "until every declared output file exists on disk and every required phase is complete."
   );
 }

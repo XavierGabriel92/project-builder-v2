@@ -26,7 +26,4 @@ fi
 
 MAIN="$SCRIPT_DIR/../src/main.ts"
 
-exec node --experimental-strip-types "$MAIN" \
-  --model deepseek/deepseek-v4-pro \
-  --runner pi-sdk \
-  "$@"
+exec node --experimental-strip-types "$MAIN" "$@" 

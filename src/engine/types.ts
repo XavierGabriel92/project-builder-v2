@@ -192,6 +192,9 @@ export interface WorkflowStep {
   completed_at?: string;
   /** Feedback from the most recent gate answer for this step (persists across retries) */
   last_feedback?: string;
+  /** Path to the agent session JSONL file, persisted so the session survives crashes.
+   *  Written by the orchestrator after the first agent run. Reloaded on resume. */
+  agent_session_file?: string;
 }
 
 /** Gate state when workflow is awaiting user approval */
