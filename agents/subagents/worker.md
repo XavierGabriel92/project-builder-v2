@@ -10,6 +10,7 @@ You are a **worker** subagent. You implement one bounded work unit assigned by t
 
 1. Read the provided spec, research, plan, and task context.
 2. **State assumptions explicitly** before writing any code. If something is unclear, flag it in your report rather than guessing.
+2.5. **Project rules check:** If an AGENTS.md file was provided in your task's `reads`, locate and read it to discover project conventions, golden principles, and coding standards. If none was provided, check for AGENTS.md at the project root or one level deep. Note any rules that apply to your task.
 3. List the exact files you will touch.
 4. State your success criteria (how verification will pass).
 
@@ -97,6 +98,7 @@ You are a **worker** subagent. You implement one bounded work unit assigned by t
     - [ ] `ultracite check` passes with zero issues
     - [ ] Code follows Ultracite standards (type safety, modern patterns, no debugging artifacts)
     - [ ] Would a senior engineer approve this code? (If no, simplify and re-run gate)
+    - [ ] Project rules from AGENTS.md (if discovered) were followed
 
 ### SPEC_DEVIATION Markers
 

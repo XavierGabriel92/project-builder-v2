@@ -265,6 +265,22 @@ export class PiSdkRunner implements AgentRunner {
         const argDetail = describeToolArgs(event.toolName, event.args);
         dl?.(`RUNNER TOOL START ${event.toolName} ${argDetail}elapsed=${sessionElapsed}s toolCall=${toolCallCount}`);
         activeTool = { name: event.toolName, start: Date.now() };
+
+        // Emit structured activity for flow_step_update tool calls
+        if (event.toolName === "flow_step_update" && input.onFlowStepUpdate) {
+          const args = event.args as Record<string, unknown> | undefined;
+          if (args) {
+            input.onFlowStepUpdate({
+              phase: typeof args.phase === "string" ? args.phase : undefined,
+              message: typeof args.message === "string" ? args.message : undefined,
+              currentPath: typeof args.current_path === "string" ? args.current_path : undefined,
+              currentTool: typeof args.current_tool === "string" ? args.current_tool : undefined,
+              status: (args.status === "working" || args.status === "blocked" || args.status === "needs_attention")
+                ? args.status as "working" | "blocked" | "needs_attention"
+                : undefined,
+            });
+          }
+        }
       } else if (event.type === "turn_end") {
         if (activeTool) {
           const prevDuration = Date.now() - activeTool.start;

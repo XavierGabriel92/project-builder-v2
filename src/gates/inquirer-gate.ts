@@ -9,6 +9,7 @@
 import inquirer from "inquirer";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { piTextInput } from "../cli/pi-text-input.ts";
 import type { GatePresenter, GateInput, GateAnswer } from "../orchestrator/ports.ts";
 
 // ============================================================================
@@ -143,14 +144,18 @@ export class InquirerGatePresenter implements GatePresenter {
     gate: GateInput,
     cwd: string,
   ): Promise<string | undefined> {
-    const { text } = await inquirer.prompt<{ text: string }>([
-      {
-        type: "input",
-        name: "text",
-        message: "What changes are needed? (enter to skip feedback)",
-        default: "",
-      },
-    ]);
+    // PI-style multiline text input with @ file references, Shift+Enter, etc.
+    // Uses the same Editor/TUI/autocomplete as pi interactive mode.
+    const text = await piTextInput({
+      prompt: "What changes are needed? (Enter to submit, Esc to skip)",
+      cwd,
+    });
+
+    // null → user cancelled (Ctrl+C / Ctrl+D on empty)
+    if (text === null) {
+      console.log("Feedback skipped. Returning to gate options...\n");
+      return this.present(gate, cwd).then((answer) => answer.feedback);
+    }
 
     const trimmed = text.trim();
 

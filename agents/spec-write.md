@@ -284,6 +284,12 @@ behavior matters.
 
 Write a SINGLE file — `spec.md`. Do NOT write separate files.
 
+**⚠️ CRITICAL — Write the file FIRST:** Your VERY FIRST action in Phase 8 MUST be to
+call `write` to create `spec.md` with a skeleton. Even if the content is incomplete,
+write the file immediately. Then continue editing and expanding it. If your response
+gets cut off mid-generation, the file MUST already exist on disk — the workflow
+verifier only checks that the file exists, not that it's complete.
+
 ```markdown
 # Specification: {feature}
 

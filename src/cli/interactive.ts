@@ -7,6 +7,7 @@
 
 import inquirer from "inquirer";
 import type { DiscoveredFlow } from "../flows/discovery.ts";
+import { piTextInput } from "./pi-text-input.ts";
 
 // ============================================================================
 // Flow Selection
@@ -74,13 +75,17 @@ export async function promptFeatureName(): Promise<{
     },
   ]);
 
-  const { context } = await inquirer.prompt<{ context: string }>([
-    {
-      type: "input",
-      name: "context",
-      message: "What do you want to build? (optional description):",
-    },
-  ]);
+  // PI-style multiline text input with @ file references, Shift+Enter, etc.
+  // Uses the same Editor/TUI/autocomplete as pi interactive mode.
+  const context = await piTextInput({
+    prompt: "What do you want to build? (Enter to submit, Esc to skip)",
+    cwd: process.cwd(),
+  });
+
+  if (context === null) {
+    // User cancelled — treat as SIGINT
+    throw new Error("Feature input cancelled");
+  }
 
   return {
     name: name.trim(),

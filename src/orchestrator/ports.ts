@@ -33,6 +33,16 @@ export interface AgentRunInput {
    *  Called with a human-readable message describing current activity. */
   onActivity?: (message: string) => void;
 
+  /** Optional callback for structured flow_step_update tool calls.
+   *  Receives phase, message, current path/tool from the agent's flow_step_update tool. */
+  onFlowStepUpdate?: (update: {
+    phase?: string;
+    message?: string;
+    currentPath?: string;
+    currentTool?: string;
+    status?: "working" | "blocked" | "needs_attention";
+  }) => void;
+
   /** Optional callback for debug-level logging during agent execution.
    *  The orchestrator sets this when --debug is active. The runner writes
    *  detailed per-event timing (tool calls, turns, session lifecycle) to the
@@ -75,6 +85,12 @@ export interface AgentRunResult {
   messages?: unknown[];
   /** Error details if failed. */
   error?: string;
+
+  /** Token usage from the agent run (when available from the runner). */
+  tokenUsage?: {
+    input: number;
+    output: number;
+  };
 
   /**
    * Opaque session identifier. The orchestrator passes this back in
@@ -179,7 +195,7 @@ export interface FlowProgress {
     feature: string;
     totalSteps: number;
     /** Step history for resume display (agent name + status per step). */
-    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number }>;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; requestApproval?: boolean; phase?: string; startedAt?: string; completedAt?: string; attempt?: number }>;
   }): void;
 
   /** Called when a step is about to execute (fresh start or retry). */
@@ -201,8 +217,8 @@ export interface FlowProgress {
   onFlowBlocked(error: string): void;
 
   /** Called when the agent reports current activity during execution.
-   *  Receives a human-readable message describing what the agent is doing. */
-  onStepActivity?(step: { agent: string; index: number; message: string }): void;
+   *  Receives a human-readable message plus optional phase, path, tool, and status context. */
+  onStepActivity?(step: { agent: string; index: number; message: string; phase?: string; path?: string; status?: "working" | "blocked" | "needs_attention"; currentTool?: string }): void;
 
   // ── Optional hooks (no-op if not implemented) ────────────────
 

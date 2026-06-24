@@ -49,6 +49,7 @@ When dispatching each worker, provide ONLY what it needs:
 - Key interfaces, types, and contracts this task must conform to
 - Integration points with other workers' code (shared types, method signatures, data formats)
 - The `reads` parameter pointing to files the worker needs to inspect
+- The project's AGENTS.md path in `reads` so the worker can discover conventions, golden principles, and architectural rules
 
 **DO NOT INCLUDE:**
 - Other tasks' definitions

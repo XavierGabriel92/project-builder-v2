@@ -73,7 +73,13 @@ describe("buildSystemPrefix", () => {
   it("includes workspace path instruction", () => {
     const state = makeState({ feature_path: "18-06-2026-user-auth" });
     const result = buildSystemPrefix(state);
-    assert.match(result, /MUST be written to .temp\/18-06-2026-user-auth/);
+    assert.match(result, /MUST be written to \/tmp\/test\/\.temp\/18-06-2026-user-auth/);
+  });
+
+  it("includes explicit output file names when outputs are provided", () => {
+    const state = makeState({ feature_path: "18-06-2026-crud-using-express" });
+    const result = buildSystemPrefix(state, ["spec.md"]);
+    assert.match(result, /Specifically, you must write: \/tmp\/test\/\.temp\/18-06-2026-crud-using-express\/spec\.md/);
   });
 
   it("includes project rules when present", () => {
@@ -197,12 +203,12 @@ describe("buildPrompt", () => {
     assert.doesNotMatch(result, /includeProgress: true/);
   });
 
-  it("includes workspace prefix so agent writes to .temp/", () => {
+  it("does NOT duplicate workspace prefix — it lives in buildSystemPrefix only", () => {
     const state = makeState({ feature_path: "18-06-2026-crud-using-express" });
     const agent = makeAgent({ prompt: "do stuff" });
     const result = buildPrompt(agent, state);
-    assert.match(result, /MUST be written to .temp\/18-06-2026-crud-using-express/);
-    assert.match(result, /Always write .temp\/18-06-2026-crud-using-express\//);
+    assert.doesNotMatch(result, /MUST be written to .temp/);
+    assert.doesNotMatch(result, /Always write .temp/);
   });
 
   it("does NOT include SUBAGENT_COMPLETION_SUFFIX", () => {

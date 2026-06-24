@@ -199,6 +199,11 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
         : s.status === "running" ? "running" as const
         : "pending" as const,
       maxAttempts: flow.steps[i]?.attempts ?? 1,
+      requestApproval: flow.steps[i]?.requestApproval ?? false,
+      phase: flow.steps[i]?.phase,
+      startedAt: s.started_at,
+      completedAt: s.completed_at,
+      attempt: s.attempt,
     })),
   });
 
@@ -345,6 +350,17 @@ async function executeStep(
           message,
         });
       },
+      onFlowStepUpdate: (update) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message: update.message ?? "working",
+          phase: update.phase,
+          path: update.currentPath,
+          status: update.status,
+          currentTool: update.currentTool,
+        });
+      },
       debugLog,
     });
 
@@ -409,8 +425,9 @@ async function executeStep(
         if (attempt < maxAttempts) {
           // Outputs missing but retries remain — treat as error and retry.
           // Step is still "running" so applyStepResult will accept the retry.
-          // Keep feedbackForRetry so it's re-injected on the next attempt.
           const missingList = verification.missing.join(", ");
+          // Inject feedback so the agent knows WHY it's being retried
+          feedbackForRetry = `Your last run did not produce the expected output files. You MUST write these files before stopping:\n- ${missingList}\n\nWrite the files now using the write tool. Do not just ask questions — produce the actual deliverable.`;
           const transition = applyStepResult(
             state,
             { result: "error", message: `Missing outputs: ${missingList}`, retryable: true },

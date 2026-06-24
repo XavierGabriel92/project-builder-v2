@@ -83,7 +83,9 @@ export function startStep(state: WorkflowState): WorkflowState {
   if (step.status !== "pending") return next;
 
   step.status = "running";
-  step.started_at = new Date().toISOString();
+  if (!step.started_at) {
+    step.started_at = new Date().toISOString();
+  }
   step.completed_at = undefined;
   step.result = undefined;
   step.activity = {

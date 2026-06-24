@@ -15,17 +15,38 @@ export class ConsoleProgress implements FlowProgress {
   private spinnerInterval: ReturnType<typeof setInterval> | null = null;
   private currentStepLabel = "";
   private currentStepStart = 0;
-  private stepList: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; currentAttempt: number }> = [];
+  private stepList: Array<{ agent: string; status: "completed" | "running" | "pending" | "failed"; maxAttempts: number; currentAttempt: number; hasGate?: boolean; phase?: string }> = [];
   private flowHeader = "";
-  private stepsRendered = false;
   /** Latest activity message from the running agent (cleared on step end). */
   private currentActivity = "";
-  /** Accumulated step summaries keyed by step index (shown under completed steps). */
-  private stepEndInfo: Array<{ index: number; summary: string }> = [];
+  /** Phase label from flow_step_update (e.g. "implementing"). */
+  private currentPhase = "";
+  /** File path from flow_step_update (e.g. "src/services/auth.ts"). */
+  private currentPath = "";
+  /** Current tool from flow_step_update (e.g. "write"). */
+  private currentTool = "";
+  /** Status from flow_step_update (working/blocked/needs_attention). */
+  private currentStatus: "working" | "blocked" | "needs_attention" | "" = "";
+  /** Accumulated step timing info keyed by step index (shown under completed steps). */
+  private stepEndInfo: Array<{ index: number; elapsed: string; attempts: number }> = [];
   /** Model info from the most recent step result (e.g. "DeepSeek V4 Pro (1.0M)"). */
   private currentModelInfo = "";
   /** Thinking level from the most recent step result (e.g. "high"). */
   private currentThinkingLevel = "";
+  /** Reason for the most recent retry (shown in spinner line). Cleared on step start. */
+  private lastRetryReason: string | null = null;
+  /** Token usage from the most recent step result (for footer). */
+  private lastTokenUsage: { input: number; output: number } | null = null;
+  /** Expected output file paths keyed by step index (for completion table). */
+  private stepOutputs = new Map<number, string[]>();
+  /** Cached step labels for rebuilding the pipeline diagram each frame. */
+  private cachedLabels: string[] = [];
+  /** Inner box width for the pipeline diagram (max label length). */
+  private boxMaxLen = 0;
+  /** One-line execution plan rendered at flow start. */
+  private executionPlan = "";
+  /** Whether the renderHeader call is the initial flow-start render (for execution plan). */
+  private initialRender = true;
 
   // ── Required lifecycle hooks ─────────────────────────────────
 
@@ -33,11 +54,33 @@ export class ConsoleProgress implements FlowProgress {
     flowId: string;
     feature: string;
     totalSteps: number;
-    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number }>;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; requestApproval?: boolean; phase?: string }>;
   }): void {
     this.flowStartTime = Date.now();
     this.flowHeader = `🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)`;
-    this.stepList = (info.steps ?? []).map(s => ({ ...s, currentAttempt: 0 }));
+    this.stepList = (info.steps ?? []).map(s => ({
+      ...s,
+      currentAttempt: 0,
+      hasGate: s.requestApproval ?? false,
+    }));
+
+    // ── Phase 2: Pipeline diagram (cache labels) ───────────
+    this.cachedLabels = this.stepList.map(s => s.agent);
+    this.boxMaxLen = Math.max(...this.cachedLabels.map(l => l.length)) + 4;
+
+    // ── Phase 2: Execution plan preview ─────────────────────
+    this.executionPlan = this.cachedLabels.length > 0
+      ? `Execution Plan: ${this.cachedLabels.map((label, i) => {
+          const gate = this.stepList[i]?.hasGate ? " 🔒" : "";
+          return `${label}${gate}`;
+        }).join(" → ")}`
+      : "";
+
+    // Print the execution plan as a transient header line
+    if (this.executionPlan) {
+      console.log(this.executionPlan + "\n");
+    }
+
     this.renderHeader();
   }
 
@@ -46,6 +89,10 @@ export class ConsoleProgress implements FlowProgress {
     this.currentStepLabel = `${step.agent}${retry}`;
     this.currentStepStart = Date.now();
     this.currentActivity = "";
+    this.currentPhase = "";
+    this.currentPath = "";
+    this.currentTool = "";
+    this.currentStatus = "";
     this.stepStartTimes.set(step.agent + step.index, Date.now());
 
     // Update step status in the list and re-render
@@ -53,50 +100,91 @@ export class ConsoleProgress implements FlowProgress {
       this.stepList[step.index] = { ...this.stepList[step.index], status: "running", currentAttempt: step.attempt, maxAttempts: step.maxAttempts };
     }
 
-    // Animated spinner — clears + re-renders the full step list every frame
-    // so the running step appears inline with spinner + elapsed time.
+    // Animated spinner — clears + re-renders every frame.
     // CRITICAL: build the entire output as a single string and write atomically.
     // Splitting process.stdout.write(clear) + console.log(content) into separate
     // writes causes the terminal to interleave them, producing duplicated output.
     let frame = 0;
     if (this.spinnerInterval) clearInterval(this.spinnerInterval);
+
     const renderFrame = () => {
-      const elapsed = formatDuration(Date.now() - this.currentStepStart);
+      const spinner = SPINNER_FRAMES[frame % SPINNER_FRAMES.length];
+      frame++;
+
+      // Build entire output as a single string for atomic write.
       const lines: string[] = [
         this.flowHeader,
         "",
       ];
-      for (let i = 0; i < this.stepList.length; i++) {
-        const s = this.stepList[i];
-        if (s.status === "completed") {
-          lines.push(`  ✓ ${s.agent}`);
-          // Show summary stored from onStepEnd
-          const info = this.stepEndInfo.find(e => e.index === i);
-          if (info) {
-            lines.push(`     ${info.summary}`);
+
+      // ── Shared frame data ────────────────────────────────
+      const runningIdx = this.stepList.findIndex(s => s.status === 'running');
+      const nowElapsed = formatDuration(Date.now() - this.currentStepStart);
+
+      // ── Pipeline diagram (animated border on active step) ─
+      if (this.cachedLabels.length > 0) {
+        const pipelineLines = buildPipelineDiagram(
+          this.cachedLabels,
+          runningIdx >= 0 ? runningIdx : undefined,
+          Math.floor(frame / 2),
+          this.stepList.map(s => s.status),
+        );
+        for (const pline of pipelineLines) {
+          lines.push(`  ${pline}`);
+        }
+        // Status row: build from current step states
+        const statusSteps = this.stepList.map((s, i) => {
+          let stepElapsed: string | undefined;
+          let stepAttempts: number | undefined;
+          if (s.status === 'completed') {
+            const info = this.stepEndInfo.find(e => e.index === i);
+            stepElapsed = info?.elapsed;
+            stepAttempts = info?.attempts;
+          } else if (s.status === 'running') {
+            stepElapsed = nowElapsed;
           }
-        } else if (s.status === "running") {
-          if( s.currentAttempt === 1){
-            lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent} - (${elapsed})`);
-          } else { 
-            lines.push(`  ${SPINNER_FRAMES[frame]} ${s.agent} - ${s.currentAttempt}/${s.maxAttempts}  (${elapsed})`);
-          }
-          
-          // Show live activity below the running step
-          if (this.currentActivity) {
-            lines.push(`     └─ ${this.currentActivity}`);
-          }
-        } else {
-          lines.push(`  ○ ${s.agent} - 1/${s.maxAttempts}`);
+          return {
+            status: s.status,
+            elapsed: stepElapsed,
+            attempts: stepAttempts,
+            hasGate: s.hasGate,
+            spinner: s.status === 'running' ? spinner : undefined,
+          };
+        });
+        lines.push(`  ${buildStatusRow(statusSteps, this.boxMaxLen)}`);
+        lines.push("");
+      }
+
+      // ── Running step detail line ─────────────────────────
+      if (runningIdx >= 0) {
+        const s = this.stepList[runningIdx];
+        let spinnerLine = `  ${spinner} ${s.agent} (${s.currentAttempt}/${s.maxAttempts}) — ${nowElapsed}`;
+        if (this.lastRetryReason) {
+          spinnerLine += ` · ${this.lastRetryReason}`;
+        }
+        if (this.currentPhase) {
+          spinnerLine += ` · ${this.currentPhase}`;
+        }
+        lines.push(spinnerLine);
+
+        // Activity message on its own indented line
+        if (this.currentActivity) {
+          const maxActivityLen = 100;
+          const truncated = this.currentActivity.length > maxActivityLen
+            ? this.currentActivity.slice(0, maxActivityLen - 1) + "…"
+            : this.currentActivity;
+          lines.push(`       ${truncated}`);
         }
       }
-      // Footer: model + thinking level
+
+      // Footer
       if (this.currentModelInfo) {
-        lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel));
+        lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel, this.lastTokenUsage));
       }
+
       process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
-      frame = (frame + 1) % SPINNER_FRAMES.length;
     };
+
     renderFrame(); // render immediately
     this.spinnerInterval = setInterval(renderFrame, 100);
   }
@@ -108,6 +196,10 @@ export class ConsoleProgress implements FlowProgress {
       this.spinnerInterval = null;
     }
     this.currentActivity = "";
+    this.currentPhase = "";
+    this.currentPath = "";
+    this.currentTool = "";
+    this.currentStatus = "";
 
     const key = step.agent + step.index;
     const start = this.stepStartTimes.get(key);
@@ -118,21 +210,26 @@ export class ConsoleProgress implements FlowProgress {
     if (this.stepList[step.index]) {
       this.stepList[step.index] = {
         ...this.stepList[step.index],
-        status: step.result.success ? "completed" : "pending",
+        status: step.result.success ? "completed" : "failed",
       };
     }
 
     if (step.result.success) {
-      // Store summary for display after the step list
-      if (step.result.summary) {
-        this.stepEndInfo.push({ index: step.index, summary: step.result.summary });
-      }
+      // Clear retry reason on success
+      this.lastRetryReason = null;
+      // Store elapsed time + attempt count for compact display under completed steps
+      const attempts = this.stepList[step.index]?.currentAttempt ?? 1;
+      this.stepEndInfo.push({ index: step.index, elapsed, attempts });
       // Capture model info for footer display
       if (step.result.modelInfo) {
         this.currentModelInfo = step.result.modelInfo;
       }
       if (step.result.thinkingLevel) {
         this.currentThinkingLevel = step.result.thinkingLevel;
+      }
+      // Capture token usage for footer display
+      if (step.result.tokenUsage) {
+        this.lastTokenUsage = step.result.tokenUsage;
       }
       // Render final static state with the step marked completed
       this.renderHeader();
@@ -148,7 +245,39 @@ export class ConsoleProgress implements FlowProgress {
 
   onFlowComplete(): void {
     const total = formatDuration(Date.now() - this.flowStartTime);
-    console.log(`\n✅ Done (${total})\n`);
+    const lines: string[] = [
+      `\n✅ Flow complete — ${total}\n`,
+    ];
+
+    // Build completion table
+    const rows = this.stepList.map((s, i) => {
+      const info = this.stepEndInfo.find(e => e.index === i);
+      return {
+        index: i + 1,
+        agent: s.agent,
+        time: info?.elapsed ?? "—",
+        attempts: info?.attempts ?? s.currentAttempt,
+        status: s.status,
+      };
+    });
+
+    if (rows.length > 0) {
+      const statusIcon = (s: string) => s === "completed" ? "✅" : s === "failed" ? "❌" : "⬜";
+      const padAgent = Math.max(...rows.map(r => r.agent.length), 5);
+      const padTime = Math.max(...rows.map(r => r.time.length), 4);
+
+      lines.push(`  Step  ${'Agent'.padEnd(padAgent)}  ${'Time'.padEnd(padTime)}  Attempts  Status`);
+      lines.push(`  ${'────'.padEnd(4)}  ${'─────'.padEnd(padAgent)}  ${'────'.padEnd(padTime)}  ${'────────'.padEnd(8)}  ──────`);
+      for (const row of rows) {
+        const stepNum = String(row.index).padEnd(4);
+        const agent = row.agent.padEnd(padAgent);
+        const time = row.time.padEnd(padTime);
+        const attempts = String(row.attempts).padEnd(8);
+        lines.push(`  ${stepNum}  ${agent}  ${time}  ${attempts}  ${statusIcon(row.status)}`);
+      }
+    }
+
+    console.log(lines.join("\n") + "\n");
   }
 
   onFlowAbandoned(): void {
@@ -156,8 +285,44 @@ export class ConsoleProgress implements FlowProgress {
   }
 
   onFlowBlocked(error: string): void {
-    console.log(`\n❌ Flow blocked`);
-    console.log(`   ${error}`);
+    // Mark the current (failed) step for display
+    const failedIndex = this.stepList.findIndex(s => s.status === "running");
+    if (failedIndex >= 0) {
+      this.stepList[failedIndex].status = "failed";
+    }
+    this.renderHeader();
+
+    // Structured block summary table
+    const failedStep = failedIndex >= 0 ? this.stepList[failedIndex] : null;
+    const rows = this.stepList.map((s, i) => ({
+      index: i + 1,
+      agent: s.agent,
+      attempts: s.currentAttempt,
+      maxAttempts: s.maxAttempts,
+      status: s.status,
+      error: i === failedIndex ? error : undefined,
+    }));
+
+    if (rows.length > 0) {
+      const statusIcon = (s: string) => s === "completed" ? "✅" : s === "failed" ? "❌" : "⬜";
+      const padAgent = Math.max(...rows.map(r => r.agent.length), 5);
+      const lines: string[] = [];
+      if (failedStep) {
+        lines.push(`\n❌ Flow blocked at Step ${failedIndex + 1}: ${failedStep.agent}\n`);
+      }
+      lines.push(`  Step  ${'Agent'.padEnd(padAgent)}  Attempts   Status`);
+      lines.push(`  ${'────'.padEnd(4)}  ${'─────'.padEnd(padAgent)}  ${'────────'.padEnd(8)}  ──────`);
+      for (const row of rows) {
+        const stepNum = String(row.index).padEnd(4);
+        const agent = row.agent.padEnd(padAgent);
+        const attempts = `${row.attempts}/${row.maxAttempts}`.padEnd(8);
+        lines.push(`  ${stepNum}  ${agent}  ${attempts}  ${statusIcon(row.status)}`);
+      }
+      lines.push(`\n   Last error: ${error}`);
+      console.log(lines.join("\n"));
+    } else {
+      console.log(`\n   Error: ${error}`);
+    }
   }
 
   // ── Optional hooks ───────────────────────────────────────────
@@ -173,6 +338,7 @@ export class ConsoleProgress implements FlowProgress {
       gate_rejected: "gate rejected",
       missing_outputs: "missing outputs",
     };
+    this.lastRetryReason = reasonLabel[step.reason];
     console.log(
       `  ↻ Retrying ${step.agent} (attempt ${step.attempt}): ${reasonLabel[step.reason]}`,
     );
@@ -193,12 +359,17 @@ export class ConsoleProgress implements FlowProgress {
   // ── Rendering ──────────────────────────────────────────────
 
   /** Called when the agent reports current activity during execution.
-   *  The activity string is picked up by the next spinner frame render. */
-  onStepActivity(_step: { agent: string; index: number; message: string }): void {
+   *  The activity string and optional phase/path/tool/status are picked up
+   *  by the next spinner frame render. */
+  onStepActivity(_step: { agent: string; index: number; message: string; phase?: string; path?: string; status?: "working" | "blocked" | "needs_attention"; currentTool?: string }): void {
     this.currentActivity = _step.message;
+    this.currentPhase = _step.phase ?? "";
+    this.currentPath = _step.path ?? "";
+    this.currentStatus = _step.status ?? "";
+    this.currentTool = _step.currentTool ?? "";
   }
 
-  /** Clear + render header + static step list (no spinner).
+  /** Clear + render header with pipeline diagram and status row (no spinner).
    *  Builds entire output as a single string for atomic write — see onStepStart
    *  for the rationale (split writes cause terminal interleaving / duplication). */
   private renderHeader(): void {
@@ -206,24 +377,41 @@ export class ConsoleProgress implements FlowProgress {
       this.flowHeader,
       "",
     ];
-    for (let i = 0; i < this.stepList.length; i++) {
-      const s = this.stepList[i];
-      if (s.status === "completed") {
-        lines.push(`  ✓ ${s.agent}`);
-        // Show summary stored from onStepEnd
-        const info = this.stepEndInfo.find(e => e.index === i);
-        if (info) {
-          lines.push(`     ${info.summary}`);
-        }
-      } else if (s.status === "running") {
-        lines.push(`  ⠿ ${s.agent} - ${s.currentAttempt}/${s.maxAttempts}`);
-      } else {
-        lines.push(`  ○ ${s.agent} - 1/${s.maxAttempts}`);
+
+    // ── Pipeline diagram + status row ──────────────────────
+    if (this.cachedLabels.length > 0) {
+      const pipelineLines = buildPipelineDiagram(
+        this.cachedLabels,
+        undefined,
+        undefined,
+        this.stepList.map(s => s.status),
+      );
+      for (const pline of pipelineLines) {
+        lines.push(`  ${pline}`);
       }
+      // Build status row from current step states (no spinner; static render)
+      const statusSteps = this.stepList.map((s, i) => {
+        let stepElapsed: string | undefined;
+        let stepAttempts: number | undefined;
+        if (s.status === 'completed') {
+          const info = this.stepEndInfo.find(e => e.index === i);
+          stepElapsed = info?.elapsed;
+          stepAttempts = info?.attempts;
+        }
+        return {
+          status: s.status,
+          elapsed: stepElapsed,
+          attempts: stepAttempts,
+          hasGate: s.hasGate,
+        };
+      });
+      lines.push(`  ${buildStatusRow(statusSteps, this.boxMaxLen)}`);
+      lines.push("");
     }
-    // Footer: model + thinking level
+
+    // Footer: model + thinking level + token usage
     if (this.currentModelInfo) {
-      lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel));
+      lines.push(buildFooter(this.currentModelInfo, this.currentThinkingLevel, this.lastTokenUsage));
     }
     process.stdout.write('\x1b[3J\x1b[H\x1b[2J' + lines.join("\n") + "\n");
   }
@@ -241,6 +429,7 @@ export class NoopProgress implements FlowProgress {
   onFlowComplete(): void {}
   onFlowAbandoned(): void {}
   onFlowBlocked(): void {}
+  onStepActivity?(): void {}
   onStepRetry?(): void {}
   onOutputVerification?(): void {}
 }
@@ -248,6 +437,128 @@ export class NoopProgress implements FlowProgress {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+/**
+ * Build an ASCII box-drawing pipeline diagram from step agent labels.
+ * Box width adapts to the longest label; arrows connect adjacent boxes.
+ * When activeIndex + frame are provided, the active box gets an animated
+ * "marching dots" border effect.
+ *
+ *   ┌───────────┐   ┌──────┐   ┌───────────┐
+ *   │ spec-write │ → │ plan │ → │ implement │
+ *   └───────────┘   └──────┘   └───────────┘
+ */
+function buildPipelineDiagram(
+  labels: string[],
+  activeIndex?: number,
+  frame?: number,
+  statuses?: string[],
+): string[] {
+  if (labels.length === 0) return [];
+
+  const maxLen = Math.max(...labels.map(l => l.length));
+  const padded = labels.map(l => l.padEnd(maxLen));
+
+  const topLine = padded.map((_, i) => {
+    const prefix = i === 0 ? '' : '   ';
+    const animate = i === activeIndex && frame !== undefined;
+    const box = animate ? animatedBoxTop(maxLen, frame!) : normalBoxTop(maxLen);
+    return prefix + (statuses?.[i] === 'completed' ? green(box) : box);
+  }).join('');
+
+  const midLine = padded.map((label, i) => {
+    const prefix = i === 0 ? '' : ' → ';
+    const animate = i === activeIndex && frame !== undefined;
+    const box = animate ? animatedBoxMid(label, maxLen, frame!) : normalBoxMid(label, maxLen);
+    return prefix + (statuses?.[i] === 'completed' ? green(box) : box);
+  }).join('');
+
+  const botLine = padded.map((_, i) => {
+    const prefix = i === 0 ? '' : '   ';
+    const animate = i === activeIndex && frame !== undefined;
+    const box = animate ? animatedBoxBot(maxLen, frame!) : normalBoxBot(maxLen);
+    return prefix + (statuses?.[i] === 'completed' ? green(box) : box);
+  }).join('');
+
+  return [topLine, midLine, botLine];
+}
+
+// ── ANSI helpers ──────────────────────────────────────────
+
+function green(text: string): string {
+  return `\x1b[32m${text}\x1b[0m`;
+}
+
+// ── Static box builders (all output maxLen + 4 chars wide) ─
+
+function normalBoxTop(w: number): string {
+  return `┌${'─'.repeat(w + 2)}┐`;
+}
+function normalBoxMid(label: string, w: number): string {
+  return `│ ${label.padEnd(w)} │`;
+}
+function normalBoxBot(w: number): string {
+  return `└${'─'.repeat(w + 2)}┘`;
+}
+
+// ── Animated box builders (marching dots on border) ───────
+
+/** Whether position (x,y) within the box shows a dot at the given frame. */
+function isDot(x: number, y: number, frame: number): boolean {
+  return (x + y + frame) % 2 === 0;
+}
+
+/** Box total width = w+4.  Edge chars at x=0 and x=w+3. */
+function animatedBoxTop(w: number, frame: number): string {
+  let line = '';
+  for (let x = 0; x <= w + 3; x++) {
+    const normal = x === 0 ? '┌' : x === w + 3 ? '┐' : '─';
+    line += isDot(x, 0, frame) ? '.' : normal;
+  }
+  return line;
+}
+
+function animatedBoxMid(label: string, w: number, frame: number): string {
+  const left = isDot(0, 1, frame) ? '.' : '│';
+  const right = isDot(w + 3, 1, frame) ? '.' : '│';
+  return `${left} ${label.padEnd(w)} ${right}`;
+}
+
+function animatedBoxBot(w: number, frame: number): string {
+  let line = '';
+  for (let x = 0; x <= w + 3; x++) {
+    const normal = x === 0 ? '└' : x === w + 3 ? '┘' : '─';
+    line += isDot(x, 2, frame) ? '.' : normal;
+  }
+  return line;
+}
+
+/**
+ * Build a status row centered under each pipeline box.
+ * Completed: X.Xs   Failed: ❌ failed
+ * Pending+gated: 🔒  Other: empty
+ */
+function buildStatusRow(
+  steps: Array<{ status: string; elapsed?: string; attempts?: number; hasGate?: boolean }>,
+  boxWidth: number,
+): string {
+  return steps.map((s, i) => {
+    let text = '';
+    if (s.status === 'completed') {
+      text = `${s.elapsed || '0s'}`;
+    } else if (s.status === 'failed') {
+      text = '❌ failed';
+    } else if (s.hasGate) {
+      text = '🔒';
+    }
+    // Center text within column, then add box separator gap
+    const totalPad = boxWidth - text.length;
+    const leftPad = Math.max(0, Math.floor(totalPad / 2));
+    const centered = ' '.repeat(leftPad) + text.padEnd(boxWidth - leftPad);
+    const prefix = i === 0 ? '' : '   ';
+    return prefix + centered;
+  }).join('');
+}
 
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
@@ -260,10 +571,25 @@ function formatDuration(ms: number): string {
     : `${minutes}m`;
 }
 
-/** Build the footer line showing model and thinking level. */
-function buildFooter(modelInfo: string, thinkingLevel: string): string {
+
+/** Format token count to human-readable (e.g. 12500 → "12.5k"). */
+function formatTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`;
+  return String(tokens);
+}
+
+/** Build the footer line showing model, thinking level, and optional token usage. */
+function buildFooter(modelInfo: string, thinkingLevel: string, tokenUsage?: { input: number; output: number } | null): string {
   const model = `[${modelInfo}]`;
-  return thinkingLevel
-    ? `\n  ${model} ${thinkingLevel}`
-    : `\n  ${model}`;
+  let line = `\n  ${model}`;
+  if (thinkingLevel) line += ` ${thinkingLevel}`;
+  if (tokenUsage) {
+    const total = tokenUsage.input + tokenUsage.output;
+    const inStr = formatTokens(tokenUsage.input);
+    const outStr = formatTokens(tokenUsage.output);
+    const totalStr = formatTokens(total);
+    line += ` · ${totalStr} tokens (${inStr} in · ${outStr} out)`;
+  }
+  return line;
 }

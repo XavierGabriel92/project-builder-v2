@@ -31,6 +31,14 @@ export interface FlowStep {
    * When unset, the default system model is used.
    */
   model?: string;
+
+  /**
+   * Optional phase label for visual grouping in console output.
+   * When set, the console renderer inserts a divider with this label
+   * before the step (e.g. "Foundation", "Review", "Finalize").
+   * When unset, dividers are auto-derived from requestApproval boundaries.
+   */
+  phase?: string;
 }
 
 /** A flow is an ordered list of agent names + approval flags — nothing domain-specific. */
