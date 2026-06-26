@@ -27,8 +27,16 @@ export class ConsoleProgress implements FlowProgress {
   private currentTool = "";
   /** Status from flow_step_update (working/blocked/needs_attention). */
   private currentStatus: "working" | "blocked" | "needs_attention" | "" = "";
+
+  // ── Tool + Subagent tracking ──────────────────────────────
+  /** Current tool being executed (name). */
+  private activeToolName = "";
+  /** Short human-readable detail for the current tool (e.g. "src/auth.ts"). */
+  private activeToolDetail = "";
+  /** Active subagents tracked by name → start timestamp. */
+  private activeSubagents = new Map<string, number>();
   /** Accumulated step timing info keyed by step index (shown under completed steps). */
-  private stepEndInfo: Array<{ index: number; elapsed: string; attempts: number }> = [];
+  private stepEndInfo = new Map<number, { elapsed: string; attempts: number }>();
   /** Model info from the most recent step result (e.g. "DeepSeek V4 Pro (1.0M)"). */
   private currentModelInfo = "";
   /** Thinking level from the most recent step result (e.g. "high"). */
@@ -54,15 +62,36 @@ export class ConsoleProgress implements FlowProgress {
     flowId: string;
     feature: string;
     totalSteps: number;
-    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; requestApproval?: boolean; phase?: string }>;
+    steps?: Array<{ agent: string; status: "completed" | "running" | "pending"; maxAttempts: number; requestApproval?: boolean; phase?: string; startedAt?: string; completedAt?: string; attempt?: number }>;
   }): void {
     this.flowStartTime = Date.now();
     this.flowHeader = `🚀 ${info.flowId} — ${info.feature}  (${info.totalSteps} steps)`;
     this.stepList = (info.steps ?? []).map(s => ({
-      ...s,
-      currentAttempt: 0,
+      agent: s.agent,
+      status: s.status,
+      maxAttempts: s.maxAttempts,
+      currentAttempt: s.attempt ?? 0,
       hasGate: s.requestApproval ?? false,
+      phase: s.phase,
     }));
+
+    // ── Pre-populate elapsed times for already-completed steps ─
+    // Uses completed_at - started_at from workflow state (covers resume + fresh).
+    this.stepEndInfo = new Map();
+    for (let i = 0; i < this.stepList.length; i++) {
+      const s = this.stepList[i];
+      const stepData = info.steps?.[i];
+      if (s.status === "completed" && stepData?.startedAt && stepData?.completedAt) {
+        const start = new Date(stepData.startedAt).getTime();
+        const end = new Date(stepData.completedAt).getTime();
+        if (start > 0 && end > start) {
+          this.stepEndInfo.set(i, {
+            elapsed: formatDuration(end - start),
+            attempts: stepData.attempt ?? 1,
+          });
+        }
+      }
+    }
 
     // ── Phase 2: Pipeline diagram (cache labels) ───────────
     this.cachedLabels = this.stepList.map(s => s.agent);
@@ -93,6 +122,9 @@ export class ConsoleProgress implements FlowProgress {
     this.currentPath = "";
     this.currentTool = "";
     this.currentStatus = "";
+    this.activeToolName = "";
+    this.activeToolDetail = "";
+    this.activeSubagents.clear();
     this.stepStartTimes.set(step.agent + step.index, Date.now());
 
     // Update step status in the list and re-render
@@ -137,7 +169,7 @@ export class ConsoleProgress implements FlowProgress {
           let stepElapsed: string | undefined;
           let stepAttempts: number | undefined;
           if (s.status === 'completed') {
-            const info = this.stepEndInfo.find(e => e.index === i);
+            const info = this.stepEndInfo.get(i);
             stepElapsed = info?.elapsed;
             stepAttempts = info?.attempts;
           } else if (s.status === 'running') {
@@ -167,8 +199,20 @@ export class ConsoleProgress implements FlowProgress {
         }
         lines.push(spinnerLine);
 
-        // Activity message on its own indented line
-        if (this.currentActivity) {
+        // ── Rich activity panel (tool + subagent) ──────────
+        const panelLines = buildActivityPanel(
+          this.activeToolName,
+          this.activeToolDetail,
+          this.activeSubagents,
+          this.currentPhase,
+          this.currentPath,
+          this.currentActivity,
+        );
+        for (const pl of panelLines) {
+          lines.push(`  ${pl}`);
+        }
+        // Fallback: simple activity line if no structured data
+        if (panelLines.length === 0 && this.currentActivity) {
           const maxActivityLen = 100;
           const truncated = this.currentActivity.length > maxActivityLen
             ? this.currentActivity.slice(0, maxActivityLen - 1) + "…"
@@ -200,6 +244,9 @@ export class ConsoleProgress implements FlowProgress {
     this.currentPath = "";
     this.currentTool = "";
     this.currentStatus = "";
+    this.activeToolName = "";
+    this.activeToolDetail = "";
+    this.activeSubagents.clear();
 
     const key = step.agent + step.index;
     const start = this.stepStartTimes.get(key);
@@ -219,7 +266,7 @@ export class ConsoleProgress implements FlowProgress {
       this.lastRetryReason = null;
       // Store elapsed time + attempt count for compact display under completed steps
       const attempts = this.stepList[step.index]?.currentAttempt ?? 1;
-      this.stepEndInfo.push({ index: step.index, elapsed, attempts });
+      this.stepEndInfo.set(step.index, { elapsed, attempts });
       // Capture model info for footer display
       if (step.result.modelInfo) {
         this.currentModelInfo = step.result.modelInfo;
@@ -251,7 +298,7 @@ export class ConsoleProgress implements FlowProgress {
 
     // Build completion table
     const rows = this.stepList.map((s, i) => {
-      const info = this.stepEndInfo.find(e => e.index === i);
+      const info = this.stepEndInfo.get(i);
       return {
         index: i + 1,
         agent: s.agent,
@@ -361,12 +408,31 @@ export class ConsoleProgress implements FlowProgress {
   /** Called when the agent reports current activity during execution.
    *  The activity string and optional phase/path/tool/status are picked up
    *  by the next spinner frame render. */
-  onStepActivity(_step: { agent: string; index: number; message: string; phase?: string; path?: string; status?: "working" | "blocked" | "needs_attention"; currentTool?: string }): void {
+  onStepActivity(_step: { agent: string; index: number; message: string; phase?: string; path?: string; status?: "working" | "blocked" | "needs_attention"; currentTool?: string; toolStarted?: { name: string; args?: Record<string, unknown> }; toolEnded?: { name: string }; subagentStarted?: { name: string }; subagentEnded?: { name: string } }): void {
     this.currentActivity = _step.message;
     this.currentPhase = _step.phase ?? "";
     this.currentPath = _step.path ?? "";
     this.currentStatus = _step.status ?? "";
     this.currentTool = _step.currentTool ?? "";
+
+    // ── Tool tracking ────────────────────────────────────────
+    if (_step.toolStarted) {
+      this.activeToolName = _step.toolStarted.name;
+      this.activeToolDetail = describeToolDetail(_step.toolStarted.name, _step.toolStarted.args);
+    }
+    if (_step.toolEnded) {
+      // Don't clear — keep showing the last completed tool.
+      // It gets replaced when the next tool starts (via toolStarted above).
+      // Only clear subagent tools when the subagent ends (handled below).
+    }
+
+    // ── Subagent tracking ────────────────────────────────────
+    if (_step.subagentStarted) {
+      this.activeSubagents.set(_step.subagentStarted.name, Date.now());
+    }
+    if (_step.subagentEnded) {
+      this.activeSubagents.delete(_step.subagentEnded.name);
+    }
   }
 
   /** Clear + render header with pipeline diagram and status row (no spinner).
@@ -394,7 +460,7 @@ export class ConsoleProgress implements FlowProgress {
         let stepElapsed: string | undefined;
         let stepAttempts: number | undefined;
         if (s.status === 'completed') {
-          const info = this.stepEndInfo.find(e => e.index === i);
+          const info = this.stepEndInfo.get(i);
           stepElapsed = info?.elapsed;
           stepAttempts = info?.attempts;
         }
@@ -592,4 +658,240 @@ function buildFooter(modelInfo: string, thinkingLevel: string, tokenUsage?: { in
     line += ` · ${totalStr} tokens (${inStr} in · ${outStr} out)`;
   }
   return line;
+}
+
+// ============================================================================
+// Activity Panel — tool + subagent display
+// ============================================================================
+
+/** Terminal width for panel sizing (fallback to 80 if stdout not available). */
+function termWidth(): number {
+  return process.stdout.columns ?? 80;
+}
+
+/** Icons for common tool names. */
+const TOOL_ICONS: Record<string, string> = {
+  read: "📖",
+  write: "📝",
+  edit: "✏️ ",
+  bash: "⚡",
+  grep: "🔎",
+  find: "🔍",
+  ls: "📂",
+  web_search: "🌐",
+  code_search: "💻",
+  fetch_content: "📥",
+  get_search_content: "📄",
+  subagent: "🤖",
+  ask_user_question: "❓",
+  flow_step_update: "📊",
+  mcp: "🔌",
+};
+
+/**
+ * Extract a human-readable detail from tool arguments (file path, command, etc.).
+ * Returns an empty string if no meaningful detail can be extracted.
+ */
+function describeToolDetail(toolName: string, args?: Record<string, unknown>): string {
+  if (!args || typeof args !== "object") return "";
+
+  switch (toolName) {
+    case "read": {
+      const p = typeof args.path === "string" ? args.path : "";
+      return p ? basename(p) : "";
+    }
+    case "write": {
+      const p = typeof args.path === "string" ? args.path : "";
+      return p ? basename(p) : "";
+    }
+    case "edit": {
+      const p = typeof args.path === "string" ? args.path : "";
+      const edits = Array.isArray(args.edits) ? args.edits.length : 0;
+      const base = p ? basename(p) : "";
+      return edits > 0 ? `${base} (${edits} edit${edits !== 1 ? "s" : ""})` : base;
+    }
+    case "bash": {
+      const cmd = typeof args.command === "string" ? args.command : "";
+      if (!cmd) return "";
+      // Truncate long commands
+      return cmd.length > 60 ? cmd.slice(0, 57) + "..." : cmd;
+    }
+    case "grep": {
+      const pattern = typeof args.pattern === "string" ? args.pattern : "";
+      const gp = typeof args.path === "string" ? ` in ${basename(args.path)}` : "";
+      return pattern ? `"${pattern}"${gp}` : "";
+    }
+    case "find": {
+      const pattern = typeof args.pattern === "string" ? args.pattern : "";
+      return pattern || "";
+    }
+    case "ls": {
+      const p = typeof args.path === "string" ? args.path : ".";
+      return p !== "." ? basename(p) : "";
+    }
+    case "subagent": {
+      const agent = typeof args.agent === "string" ? args.agent : "";
+      return agent || "";
+    }
+    case "web_search": {
+      if (args.queries && Array.isArray(args.queries)) return `${args.queries.length} queries`;
+      const q = typeof args.query === "string" ? args.query : "";
+      return q ? (q.length > 50 ? q.slice(0, 47) + "..." : q) : "";
+    }
+    case "fetch_content": {
+      if (args.urls && Array.isArray(args.urls)) return `${args.urls.length} urls`;
+      const u = typeof args.url === "string" ? args.url : "";
+      return u ? (u.length > 50 ? u.slice(0, 47) + "..." : u) : "";
+    }
+    case "ask_user_question": {
+      const questions = Array.isArray(args.questions) ? args.questions.length : 0;
+      return questions > 0 ? `${questions} question${questions !== 1 ? "s" : ""}` : "";
+    }
+    case "code_search": {
+      const q = typeof args.query === "string" ? args.query : "";
+      return q ? (q.length > 60 ? q.slice(0, 57) + "..." : q) : "";
+    }
+    default:
+      return "";
+  }
+}
+
+/** Extract the filename from a path. */
+function basename(p: string): string {
+  const parts = p.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] ?? p;
+}
+
+/**
+ * Build a bordered activity panel showing the agent's current tool + active subagents.
+ * Only renders when there's something to show (tool or subagents).
+ * Returns empty array when nothing is active.
+ */
+function buildActivityPanel(
+  toolName: string,
+  toolDetail: string,
+  activeSubagents: Map<string, number>,
+  phase: string,
+  path: string,
+  activity: string,
+): string[] {
+  const rows: string[] = [];
+
+  // ── Current tool (persists after completion, replaced by next tool) ─
+  // Skip when the tool IS "subagent" — activeSubagents already shows it with elapsed.
+  if (toolName && toolName !== "subagent") {
+    const icon = TOOL_ICONS[toolName] ?? "🔧";
+    const label = toolName === "flow_step_update" ? "phase update" : toolName;
+    let line = `${icon} ${label}`;
+    if (toolDetail) line += `: ${toolDetail}`;
+    rows.push(line);
+  }
+
+  // ── Active subagents ─────────────────────────────────────
+  const now = Date.now();
+  activeSubagents.forEach((startTime, name) => {
+    const elapsed = formatDuration(now - startTime);
+    rows.push(`🤖 subagent: ${name} (${elapsed})`);
+  });
+
+  // ── Subagent progress (activity messages while a subagent is running) ─
+  // Filter out generic tool-start/end messages — show only meaningful text.
+  if (activeSubagents.size > 0 && activity) {
+    const isGeneric = /^(using |done )/.test(activity);
+    if (!isGeneric && activity.length > 0) {
+      const truncated = activity.length > 80
+        ? activity.slice(0, 77) + "..."
+        : activity;
+      rows.push(`   ↳ ${truncated}`);
+    }
+  }
+
+  // ── Phase + path context ─────────────────────────────────
+  if (phase && path) {
+    rows.push(`📍 ${phase} · ${path}`);
+  } else if (path) {
+    rows.push(`📍 ${path}`);
+  }
+
+  if (rows.length === 0) return [];
+
+  // ── Enclose in a single-line-width box ───────────────────
+  // Panel width: longest content + padding, capped at terminal width - 2 indentation
+  const maxContentLen = rows.reduce((max, r) => Math.max(max, visibleLen(r)), 0);
+  const boxInner = Math.min(maxContentLen + 2, termWidth() - 4);
+
+  const result: string[] = [];
+  const topBar = `┌${'─'.repeat(boxInner)}┐`;
+  result.push(topBar);
+
+  for (const row of rows) {
+    const truncated = truncateVisible(row, boxInner - 1);
+    result.push(`│ ${truncated}${' '.repeat(Math.max(0, boxInner - visibleLen(row) - 1))}│`);
+  }
+
+  const botBar = `└${'─'.repeat(boxInner)}┘`;
+  result.push(botBar);
+
+  return result;
+}
+
+/** Get visible length of a string, stripping ANSI escape codes and accounting for
+ *  wide characters (emoji, CJK) that occupy 2 terminal cells. */
+function visibleLen(s: string): number {
+  // Strip ANSI escape sequences: \x1b[...m
+  const clean = s.replace(/\x1b\[[0-9;]*m/g, "");
+  let len = 0;
+  for (const ch of clean) {
+    const cp = ch.codePointAt(0) ?? 0;
+    // East Asian Wide + emoji-presentation characters take 2 cells
+    // This is a heuristic — covers emoji (U+1F300-U+1FAFF), CJK, and common symbols
+    if (
+      cp > 0x1F000 ||                // Emoji & Symbols Extended
+      (cp >= 0x1F300 && cp <= 0x1FAFF) || // Emoji & pictographs
+      (cp >= 0x2600 && cp <= 0x27BF) ||   // Misc symbols (includes some emoji)
+      (cp >= 0x2300 && cp <= 0x23FF) ||   // Misc technical (includes some emoji)
+      (cp >= 0x2E80 && cp <= 0xA4CF)      // CJK
+    ) {
+      len += 2;
+    } else {
+      len += 1;
+    }
+  }
+  return len;
+}
+
+/** Truncate a string to a visible length, preserving ANSI codes at the end for reset.
+ *  Counts wide characters (emoji, CJK) as 2 cells. */
+function truncateVisible(s: string, maxLen: number): string {
+  let visible = 0;
+  let result = "";
+  let i = 0;
+  while (i < s.length && visible < maxLen) {
+    if (s[i] === "\x1b" && s[i + 1] === "[") {
+      // Consume the entire ANSI sequence
+      const end = s.indexOf("m", i);
+      if (end !== -1) {
+        result += s.slice(i, end + 1);
+        i = end + 1;
+        continue;
+      }
+    }
+    // Check if this character takes 2 cells
+    const cp = s.codePointAt(i) ?? s.charCodeAt(i);
+    const charWidth = (
+      cp > 0x1F000 ||
+      (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+      (cp >= 0x2600 && cp <= 0x27BF) ||
+      (cp >= 0x2300 && cp <= 0x23FF) ||
+      (cp >= 0x2E80 && cp <= 0xA4CF)
+    ) ? 2 : 1;
+    if (visible + charWidth > maxLen) break;
+    // Handle surrogate pairs
+    const charLen = cp > 0xFFFF ? 2 : 1;
+    result += s.slice(i, i + charLen);
+    visible += charWidth;
+    i += charLen;
+    if (charLen === 2 && s[i - 1] === undefined) i = s.length; // safety
+  }
+  return result;
 }

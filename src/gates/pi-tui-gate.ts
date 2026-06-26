@@ -63,7 +63,10 @@ export class PiTuiGatePresenter implements GatePresenter {
     this.uiContext = uiContext;
   }
 
-  async present(gate: GateInput, cwd: string): Promise<GateAnswer> {
+  async present(gate: GateInput, cwd: string, _retryCount = 0): Promise<GateAnswer> {
+    // ── Retry guard: prevent infinite re-presentation loops ───
+    const MAX_RETRIES = 3;
+
     // ── Show preview as a notification ──────────────────────────
     if (gate.previewPath) {
       const fullPath = path.resolve(cwd, gate.previewPath);
@@ -86,6 +89,7 @@ export class PiTuiGatePresenter implements GatePresenter {
     }
 
     // ── Present gate options ────────────────────────────────────
+    const selectStart = Date.now();
     const chosen = await this.uiContext.select<
       GateInput["options"][number]
     >(
@@ -96,10 +100,21 @@ export class PiTuiGatePresenter implements GatePresenter {
         value: opt,
       })),
     );
+    const selectElapsed = Date.now() - selectStart;
+
+    // ── Timing guard: if select() resolved suspiciously fast, the ──
+    // TUI likely auto-resolved without showing the gate. Re-present.
+    if (selectElapsed < 200 && _retryCount < MAX_RETRIES) {
+      this.uiContext.notify(
+        `Gate resolved too quickly (${selectElapsed}ms) — re-presenting (attempt ${_retryCount + 1}/${MAX_RETRIES})...`,
+        "warn",
+      );
+      return this.present(gate, cwd, _retryCount + 1);
+    }
 
     // ── Handle Escape / cancel ──────────────────────────────────
     if (!chosen) {
-      // User cancelled (Escape) → return abort answer
+      // User cancelled (Escape) → abort if possible
       const abortOpt = gate.options.find((o) => o.abort);
       if (abortOpt) {
         return {
@@ -108,19 +123,24 @@ export class PiTuiGatePresenter implements GatePresenter {
           abort: true,
         };
       }
-      // Fallback: treat as selecting first advance option
-      const approveOpt = gate.options.find((o) => o.advance);
-      if (approveOpt) {
-        return {
-          label: approveOpt.label,
-          advance: true,
-        };
+      // No abort option and select was cancelled — re-present
+      // rather than silently auto-approving or picking a random option.
+      if (_retryCount < MAX_RETRIES) {
+        this.uiContext.notify(
+          `No option selected — re-presenting gate (attempt ${_retryCount + 1}/${MAX_RETRIES})...`,
+          "warn",
+        );
+        return this.present(gate, cwd, _retryCount + 1);
       }
-      // Absolute last resort
+      // Exhausted retries — abort as last resort
+      this.uiContext.notify(
+        "Gate retries exhausted — aborting workflow.",
+        "error",
+      );
       return {
-        label: gate.options[0].label,
-        advance: gate.options[0].advance,
-        abort: gate.options[0].abort,
+        label: gate.options[0]?.label ?? "Exit",
+        advance: false,
+        abort: true,
       };
     }
 
@@ -134,11 +154,24 @@ export class PiTuiGatePresenter implements GatePresenter {
 
       // If feedback was requested but user provided none, re-present
       if (!feedback) {
+        if (_retryCount < MAX_RETRIES) {
+          this.uiContext.notify(
+            `No feedback provided — re-presenting gate (attempt ${_retryCount + 1}/${MAX_RETRIES})...`,
+            "warn",
+          );
+          return this.present(gate, cwd, _retryCount + 1);
+        }
+        // Exhausted retries — treat as cancel (abort if possible)
         this.uiContext.notify(
-          "No feedback provided. Re-presenting gate options...",
-          "warn",
+          "Feedback retries exhausted — aborting.",
+          "error",
         );
-        return this.present(gate, cwd);
+        const abortOpt = gate.options.find((o) => o.abort);
+        return {
+          label: abortOpt?.label ?? gate.options[0]?.label ?? "Exit",
+          advance: false,
+          abort: true,
+        };
       }
     }
 

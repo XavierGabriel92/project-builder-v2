@@ -228,7 +228,7 @@ export class PiSdkRunner implements AgentRunner {
     dl?.(`RUNNER PROMPT ${finalPrompt.length} chars`);
 
     // ── Track tool call timing ────────────────────────────
-    let activeTool: { name: string; start: number } | null = null;
+    let activeTool: { name: string; start: number; subagentName?: string } | null = null;
     let toolCallCount = 0;
 
     // ── Timeout support ───────────────────────────────────────
@@ -258,13 +258,32 @@ export class PiSdkRunner implements AgentRunner {
         if (activeTool) {
           const prevDuration = Date.now() - activeTool.start;
           dl?.(`RUNNER TOOL END ${activeTool.name} duration=${prevDuration}ms`);
+          input.onToolEnd?.(activeTool.name);
+          if (activeTool.name === "subagent" && activeTool.subagentName) {
+            input.onSubagentEnd?.(activeTool.subagentName);
+          }
+          activeTool = null;
         }
         input.onActivity?.(`using ${event.toolName}`);
+        input.onToolStart?.(event.toolName, event.args as Record<string, unknown> | undefined);
+
+        // Track subagent invocations
+        let subagentName: string | undefined;
+        if (event.toolName === "subagent" && event.args) {
+          const subArgs = event.args as Record<string, unknown>;
+          subagentName = typeof subArgs.agent === "string" ? subArgs.agent : undefined;
+          if (subagentName) {
+            // Extract task for display
+            const task = typeof subArgs.task === "string" ? subArgs.task : undefined;
+            input.onSubagentStart?.(subagentName, task);
+          }
+        }
+
         const sessionElapsed = ((Date.now() - sessionStart) / 1000).toFixed(1);
         toolCallCount++;
         const argDetail = describeToolArgs(event.toolName, event.args);
         dl?.(`RUNNER TOOL START ${event.toolName} ${argDetail}elapsed=${sessionElapsed}s toolCall=${toolCallCount}`);
-        activeTool = { name: event.toolName, start: Date.now() };
+        activeTool = { name: event.toolName, start: Date.now(), subagentName };
 
         // Emit structured activity for flow_step_update tool calls
         if (event.toolName === "flow_step_update" && input.onFlowStepUpdate) {
@@ -281,10 +300,54 @@ export class PiSdkRunner implements AgentRunner {
             });
           }
         }
+      } else if (event.type === "tool_execution_update") {
+        // Forward partial results from long-running tools (subagent, bash, etc.) as activity.
+        // This captures subagent progress: the subagent tool calls onUpdate with status text
+        // as the subagent works, giving us visibility into what the subagent is doing.
+        if (event.partialResult && typeof event.partialResult === "object") {
+          const pr = event.partialResult as Record<string, unknown>;
+          // Try to extract text content from partial result
+          const content = Array.isArray(pr.content) ? pr.content : undefined;
+          if (content && content.length > 0) {
+            const firstBlock = content[0] as Record<string, unknown> | undefined;
+            if (firstBlock && typeof firstBlock.text === "string" && firstBlock.text.trim()) {
+              input.onActivity?.(firstBlock.text.trim());
+            }
+          }
+        }
+        // Additionally, forward structured flow_step_update calls from within subagents
+        if (event.toolName === "flow_step_update" && input.onFlowStepUpdate && event.args) {
+          const args = event.args as Record<string, unknown> | undefined;
+          if (args) {
+            input.onFlowStepUpdate({
+              phase: typeof args.phase === "string" ? args.phase : undefined,
+              message: typeof args.message === "string" ? args.message : undefined,
+              currentPath: typeof args.current_path === "string" ? args.current_path : undefined,
+              currentTool: typeof args.current_tool === "string" ? args.current_tool : undefined,
+              status: (args.status === "working" || args.status === "blocked" || args.status === "needs_attention")
+                ? args.status as "working" | "blocked" | "needs_attention"
+                : undefined,
+            });
+          }
+        }
+      } else if (event.type === "tool_execution_end") {
+        if (activeTool) {
+          const prevDuration = Date.now() - activeTool.start;
+          dl?.(`RUNNER TOOL END ${activeTool.name} duration=${prevDuration}ms`);
+          input.onToolEnd?.(activeTool.name);
+          if (activeTool.name === "subagent" && activeTool.subagentName) {
+            input.onSubagentEnd?.(activeTool.subagentName);
+          }
+          activeTool = null;
+        }
       } else if (event.type === "turn_end") {
         if (activeTool) {
           const prevDuration = Date.now() - activeTool.start;
           dl?.(`RUNNER TOOL END ${activeTool.name} duration=${prevDuration}ms`);
+          input.onToolEnd?.(activeTool.name);
+          if (activeTool.name === "subagent" && activeTool.subagentName) {
+            input.onSubagentEnd?.(activeTool.subagentName);
+          }
           activeTool = null;
         }
         const msg = event.message;

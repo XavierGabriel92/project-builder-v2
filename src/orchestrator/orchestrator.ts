@@ -175,7 +175,7 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
             writeWorkflow(projectRoot, state.feature_path, state);
 
             // Present gate if needed
-            if (flowStep.requestApproval && agent.manifest.approval && state.gate) {
+            if (flowStep.requestApproval && state.gate) {
               state = await presentAndResolveGate(
                 state, state.gate, workflowDir, projectRoot,
                 gatePresenter, progress,
@@ -228,6 +228,23 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
       state.status = "in_progress";
       state.awaiting = null;
       writeWorkflow(projectRoot, state.feature_path, state);
+    }
+
+    // Recover from an un-presented gate after a retry.
+    // If executeStep returned awaiting_user with a gate but the current
+    // step is already completed, the gate was silently skipped (e.g., if
+    // the gate condition falsely evaluated on a retry). Re-present it now.
+    if (
+      state.status === "awaiting_user" &&
+      state.gate &&
+      state.steps[state.current_step_index]?.status === "completed"
+    ) {
+      state = await presentAndResolveGate(
+        state, state.gate, workflowDir, projectRoot,
+        gatePresenter, progress,
+      );
+      writeWorkflow(projectRoot, state.feature_path, state);
+      continue;
     }
 
     // Check terminal states
@@ -361,6 +378,38 @@ async function executeStep(
           currentTool: update.currentTool,
         });
       },
+      onToolStart: (toolName: string, args?: Record<string, unknown>) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message: `using ${toolName}`,
+          toolStarted: { name: toolName, args },
+        });
+      },
+      onToolEnd: (toolName: string) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message: `done ${toolName}`,
+          toolEnded: { name: toolName },
+        });
+      },
+      onSubagentStart: (subagentName: string) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message: `subagent ${subagentName} started`,
+          subagentStarted: { name: subagentName },
+        });
+      },
+      onSubagentEnd: (subagentName: string) => {
+        progress?.onStepActivity?.({
+          agent: flowStep.agent,
+          index: state.current_step_index,
+          message: `subagent ${subagentName} finished`,
+          subagentEnded: { name: subagentName },
+        });
+      },
       debugLog,
     });
 
@@ -470,7 +519,9 @@ async function executeStep(
 
 
     // ── Gate? Persist BEFORE presenting so the gate survives crashes ──
-    if (flowStep.requestApproval && agent.manifest.approval && state.gate) {
+    // state.gate is set by applyStepResult which already validated the approval
+    // block via loadGate. No need to re-check agent.manifest.approval here.
+    if (flowStep.requestApproval && state.gate) {
       const gateStepIndex = state.gate.stepIndex;
 
       debugLog(`GATE ENTERED step=${flowStep.agent} stepIndex=${gateStepIndex} attempt=${attempt} maxAttempts=${maxAttempts} header="${state.gate.header}"`);
@@ -488,10 +539,36 @@ async function executeStep(
         options: state.gate.options,
       });
 
-      state = await presentAndResolveGate(
-        state, state.gate, workflowDir, projectRoot,
-        gatePresenter, progress,
-      );
+      debugLog(`GATE PRESENT start header="${state.gate.header}" options=${state.gate.options.map(o => o.label).join("|")}`);
+      const savedGate = { ...state.gate, options: [...state.gate.options] };
+      const gateStartMs = Date.now();
+      try {
+        state = await presentAndResolveGate(
+          state, state.gate, workflowDir, projectRoot,
+          gatePresenter, progress,
+        );
+        const gateElapsedMs = Date.now() - gateStartMs;
+        debugLog(`GATE PRESENT resolved elapsedMs=${gateElapsedMs} stepStatus=${state.steps[gateStepIndex]?.status ?? "?"} stateStatus=${state.status} currentStepIndex=${state.current_step_index} gate=${state.gate ? "present" : "undefined"}`);
+
+        // Guard: if the gate resolved suspiciously fast (< 500ms), the TUI
+        // likely auto-resolved without showing the gate to the user. Re-present.
+        if (gateElapsedMs < 500 && state.current_step_index > gateStepIndex) {
+          debugLog(`GATE SUSPICIOUS FAST resolve — elapsed=${gateElapsedMs}ms, currentStepIndex advanced from ${gateStepIndex} to ${state.current_step_index}. Re-presenting.`);
+          // Roll back to the gate step so the safety net can re-present it
+          state.current_step_index = gateStepIndex;
+          state.status = "awaiting_user";
+          state.awaiting = "user_gate";
+          state.gate = savedGate;
+        }
+      } catch (gateErr) {
+        debugLog(`GATE PRESENT CRASH error="${(gateErr as Error).message}" stack="${(gateErr as Error).stack?.slice(0, 200) ?? "(none)"}"`);
+        // Gate presenter crashed — keep state as awaiting_user with the
+        // saved gate so the main-loop safety net can re-present it.
+        state.status = "awaiting_user";
+        state.awaiting = "user_gate";
+        state.gate = savedGate;
+        // Do NOT re-throw — let the main loop recover
+      }
 
       debugLog(`GATE RESOLVED stepStatus=${state.steps[gateStepIndex]?.status ?? "?"} lastFeedback=${state.steps[gateStepIndex]?.last_feedback ?? "(none)"} stateStatus=${state.status} gate=${state.gate ? "present" : "undefined"} currentStepIndex=${state.current_step_index}`);
 

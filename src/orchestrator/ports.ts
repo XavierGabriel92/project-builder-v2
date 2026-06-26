@@ -43,6 +43,18 @@ export interface AgentRunInput {
     status?: "working" | "blocked" | "needs_attention";
   }) => void;
 
+  /** Called when the agent starts executing a tool. Passes structured tool name + args. */
+  onToolStart?: (toolName: string, args?: Record<string, unknown>) => void;
+
+  /** Called when a tool execution finishes. */
+  onToolEnd?: (toolName: string) => void;
+
+  /** Called when the agent invokes the subagent tool (start of subagent work). */
+  onSubagentStart?: (subagentName: string, task?: string) => void;
+
+  /** Called when the subagent tool returns (end of subagent work). */
+  onSubagentEnd?: (subagentName: string) => void;
+
   /** Optional callback for debug-level logging during agent execution.
    *  The orchestrator sets this when --debug is active. The runner writes
    *  detailed per-event timing (tool calls, turns, session lifecycle) to the
@@ -218,7 +230,23 @@ export interface FlowProgress {
 
   /** Called when the agent reports current activity during execution.
    *  Receives a human-readable message plus optional phase, path, tool, and status context. */
-  onStepActivity?(step: { agent: string; index: number; message: string; phase?: string; path?: string; status?: "working" | "blocked" | "needs_attention"; currentTool?: string }): void;
+  onStepActivity?(step: {
+    agent: string;
+    index: number;
+    message: string;
+    phase?: string;
+    path?: string;
+    status?: "working" | "blocked" | "needs_attention";
+    currentTool?: string;
+    /** Tool that just started executing (name + args). */
+    toolStarted?: { name: string; args?: Record<string, unknown> };
+    /** Tool that just finished executing. */
+    toolEnded?: { name: string };
+    /** Subagent that just started. */
+    subagentStarted?: { name: string };
+    /** Subagent that just ended. */
+    subagentEnded?: { name: string };
+  }): void;
 
   // ── Optional hooks (no-op if not implemented) ────────────────
 
