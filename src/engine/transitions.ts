@@ -379,7 +379,7 @@ function cloneState(state: WorkflowState): WorkflowState {
           }
         : undefined,
     })),
-    gate: state.gate ? { ...state.gate, options: [...state.gate.options] } : undefined,
+    gate: state.gate ? { ...state.gate, options: [...state.gate.options], questions: state.gate.questions ? [...state.gate.questions] : undefined } : undefined,
     flow_snapshot: { ...state.flow_snapshot, steps: [...state.flow_snapshot.steps] },
     service_dirs: state.service_dirs ? [...state.service_dirs] : undefined,
   };

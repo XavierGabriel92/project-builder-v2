@@ -205,6 +205,16 @@ export interface WorkflowStep {
   agent_session_file?: string;
 }
 
+/** A question the agent wants the user to answer at gate time. */
+export interface GateQuestion {
+  /** The question the agent wants answered. */
+  question: string;
+  /** Why the agent is asking — what it tried, what's at stake. */
+  context?: string;
+  /** Optional stable identifier for referencing the answer later. */
+  id?: string;
+}
+
 /** Gate state when workflow is awaiting user approval */
 export interface WorkflowGate {
   /** From agent approval.header */
@@ -222,6 +232,9 @@ export interface WorkflowGate {
    * The engine rejects answers with missing or incorrect nonces.
    */
   nonce: string;
+  /** Optional questions from the agent for the user to answer at gate time.
+   *  Populated from gate-questions.json written by the agent before completing. */
+  questions?: GateQuestion[];
 }
 
 /** Frozen run state persisted to workflow.json */

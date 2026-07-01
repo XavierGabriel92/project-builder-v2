@@ -10,7 +10,7 @@ import inquirer from "inquirer";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { piTextInput } from "../cli/pi-text-input.ts";
-import type { GatePresenter, GateInput, GateAnswer } from "../orchestrator/ports.ts";
+import type { GatePresenter, GateInput, GateAnswer, QuestionAnswer } from "../orchestrator/ports.ts";
 
 // ============================================================================
 // Options
@@ -47,7 +47,23 @@ export class InquirerGatePresenter implements GatePresenter {
   }
 
   async present(gate: GateInput, cwd: string): Promise<GateAnswer> {
-    // ── Show preview file if specified ──────────────────────────
+    // ── Phase 1: Answer gate questions (one open-text prompt each) ──
+    let questionAnswers: QuestionAnswer[] | undefined;
+    if (gate.questions && gate.questions.length > 0) {
+      const result = await this.collectQuestionAnswers(gate, cwd);
+      if (result === null) {
+        // User cancelled during question answering — abort
+        const abortOpt = gate.options.find(o => o.abort);
+        return {
+          label: abortOpt?.label ?? "Exit",
+          advance: false,
+          abort: true,
+        };
+      }
+      questionAnswers = result;
+    }
+
+    // ── Phase 2: Show preview + standard approval dialog ──────
     let previewText = "";
     if (gate.previewPath) {
       const fullPath = path.resolve(cwd, gate.previewPath);
@@ -58,13 +74,13 @@ export class InquirerGatePresenter implements GatePresenter {
       }
     }
 
-    // ── Present options (with optional timeout) ─────────────────
+    // Present options
     const choice = await this.promptWithTimeout(
-      () => this.presentOptions(gate, previewText),
+      () => this.presentOptions(gate.header, previewText, gate.options),
       gate,
     );
 
-    // ── Collect feedback if the option requests it ──────────────
+    // ── Phase 3: Collect feedback if the option requests it ──────
     let feedback: string | undefined;
     if (choice.feedback) {
       feedback = await this.collectFeedback(gate, cwd);
@@ -75,6 +91,7 @@ export class InquirerGatePresenter implements GatePresenter {
       advance: choice.advance,
       abort: choice.abort,
       feedback,
+      questionAnswers,
     };
   }
 
@@ -104,19 +121,72 @@ export class InquirerGatePresenter implements GatePresenter {
   }
 
   // ========================================================================
+  // Agent Questions
+  // ========================================================================
+
+  /**
+   * Present each gate question one at a time with an open-text prompt.
+   * Returns the answers, or null if the user cancelled (Esc/Ctrl+C).
+   */
+  private async collectQuestionAnswers(
+    gate: GateInput,
+    cwd: string,
+  ): Promise<QuestionAnswer[] | null> {
+    if (!gate.questions || gate.questions.length === 0) return [];
+
+    const answers: QuestionAnswer[] = [];
+    const divider = "─".repeat(50);
+
+    for (let i = 0; i < gate.questions.length; i++) {
+      const q = gate.questions[i];
+
+      // Print the question with context
+      console.log(`\n${divider}`);
+      console.log(`❓ Question ${i + 1}/${gate.questions.length}: ${q.question}`);
+      if (q.context) {
+        console.log(`   🤔 ${q.context}`);
+      }
+      console.log(`${divider}\n`);
+
+      // Collect open-text answer
+      const answer = await piTextInput({
+        prompt: "Your answer (Enter to submit, Esc to skip):",
+        cwd,
+      });
+
+      // null → user cancelled (Ctrl+C / Ctrl+D on empty)
+      if (answer === null) {
+        console.log("\nQuestion answering cancelled. Aborting gate...\n");
+        return null;
+      }
+
+      answers.push({
+        question: q.question,
+        answer: answer.trim() || "(no answer provided)",
+        id: (q as Record<string, unknown>).id as string | undefined,
+      });
+    }
+
+    // Blank line after all questions answered
+    console.log("");
+    return answers;
+  }
+
+  // ========================================================================
   // Options prompt
   // ========================================================================
 
   private async presentOptions(
-    gate: GateInput,
+    headerText: string,
     previewText: string,
+    options: GateInput["options"],
   ): Promise<GateInput["options"][number]> {
     // Build the prompt message: clickable path above, gate header below
     const messageParts: string[] = [];
     if (previewText) {
       messageParts.push(previewText);
     }
-    messageParts.push(gate.header);
+    messageParts.push(headerText);
     const message = messageParts.join("\n\n");
 
     const { choice } = await inquirer.prompt<{
@@ -126,7 +196,7 @@ export class InquirerGatePresenter implements GatePresenter {
         type: "list",
         name: "choice",
         message,
-        choices: gate.options.map((opt) => ({
+        choices: options.map((opt) => ({
           name: `${opt.label} — ${opt.description}`,
           value: opt,
         })),

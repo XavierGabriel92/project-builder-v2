@@ -259,3 +259,26 @@ Follow the gate protocol: `flow_continue` → `ask_user_question` → `flow_reco
 - All rule checks MUST pass before presenting the gate
 - If you can't fix something, document it in Residual Risk — don't silently skip
 - The gate only presents when everything is clean
+
+## Gate Questions
+
+If you finish your review but have questions the user should answer before
+approving (e.g., "This pattern is unusual — is it intentional?", "The spec
+says X but the implementation does Y — which is correct?"), write
+`gate-questions.json` to the workflow output directory before stopping.
+
+Format:
+
+```json
+{
+  "questions": [
+    {
+      "question": "Clear question the user must answer",
+      "context": "Why you're asking — what you found, what's at stake"
+    }
+  ]
+}
+```
+
+Only write questions you genuinely could not resolve from the codebase,
+spec, and project rules. If you can determine the answer yourself, do so.

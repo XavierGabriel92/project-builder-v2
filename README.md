@@ -77,6 +77,23 @@ Priority: `--api-key` > `~/.pi/agent/auth.json` > env vars (`ANTHROPIC_API_KEY`,
 | **Flows** (`src/flows/`) | Flow definitions, validation, discovery | Yes |
 | **CLI** (`src/cli/`) | Args, config, interactive prompts, resume | Yes |
 
+### Gate Questions
+
+Agents can write a `gate-questions.json` file to the workflow output directory before completing. When present, the orchestrator reads the file and injects the questions into the approval gate dialog — rendered before the standard Approve/Reject/Exit options. The user answers via the "Request changes" feedback mechanism, and answers are fed back to the LLM on retry.
+
+```json
+{
+  "questions": [
+    { "question": "Which library for date formatting?", "context": "Found dayjs (used) and date-fns (imported/unused). Need a decision." },
+    { "question": "Retry strategy for 429 errors?", "context": "Spec says 'handle graceful', no specifics." }
+  ]
+}
+```
+
+- **No new tools needed** — agents already have `write`
+- **Backward compatible** — missing file = no questions, gate unchanged
+- **Crash-safe** — file is on disk, resume re-reads it
+
 ### v1 → v2: what vanished
 
 ~800 lines of LLM-control machinery removed:
@@ -103,6 +120,7 @@ Engine layer forked verbatim from v1 with 3 import path fixes:
 - `orchestrator.ts` — `runFlow()` with retry, gate, fast-forward resume, non-strict output mode
 - Swappable runners: pi-sdk (programmatic), pi-interactive (TUI), claude-code (CLI)
 - Inquirer gate presenter with clickable file paths and feedback collection
+- **Gate questions** — agents can write `gate-questions.json` to surface unresolved questions during approval; user answers via feedback
 - ConsoleProgress: spinner animation, step timing, total duration
 - Auto-resume: detects in-progress workflows, fast-forwards completed steps
 - 5 built-in flows: feature-build, bug-fix, small-feature, quick-build, ci-build
@@ -123,8 +141,8 @@ src/
 ├── cli/             args, factory, config, interactive, resume
 └── main.ts          entry point
 agents/              15 agent .md manifests + subagents/
-test/                15 prompt-builder unit tests
-plans/               6 implementation plans
+test/                16 prompt-builder unit tests
+plans/               implementation plans
 docs/                gate bug decision record
 ```
 

@@ -107,3 +107,14 @@ Before gathering full details, classify the bug:
 ```
 
 Do not attempt to reproduce or diagnose the bug. That belongs to the `reproduce` and `diagnose` steps.
+
+## Gate Questions
+
+If you have unresolved questions after triage (e.g., "The report mentions X
+but the codebase shows Y — which is the actual behavior?", "This affects
+module Z but I have no access to its logs — can you provide?"), write
+`gate-questions.json` before stopping. Format:
+
+```json
+{"questions": [{"question": "...", "context": "..."}]}
+```

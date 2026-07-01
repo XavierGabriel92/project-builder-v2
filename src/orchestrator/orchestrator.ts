@@ -20,7 +20,7 @@
 
 import * as path from "node:path";
 import * as fs from "node:fs";
-import type { FlowDefinition, WorkflowState, FlowStep } from "../engine/types.ts";
+import type { FlowDefinition, WorkflowState, FlowStep, GateQuestion } from "../engine/types.ts";
 import {
   createWorkflowState,
   startStep,
@@ -47,6 +47,7 @@ import type {
   GatePresenter,
   OutputVerifier,
   FlowProgress,
+  QuestionAnswer,
 } from "./ports.ts";
 
 // ============================================================================
@@ -135,6 +136,11 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
 
   // ── Resume: re-present gate if state is awaiting_user ─────────
   if (state.status === "awaiting_user" && state.gate) {
+    // Re-read gate-questions.json from disk (may have been written after crash)
+    const resumeQuestions = readGateQuestions(workflowDir);
+    if (resumeQuestions && resumeQuestions.length > 0) {
+      state.gate = { ...state.gate, questions: resumeQuestions };
+    }
     state = await presentAndResolveGate(
       state, state.gate, workflowDir, projectRoot,
       gatePresenter, progress,
@@ -176,6 +182,10 @@ export async function runFlow(options: OrchestratorOptions): Promise<FlowOutcome
 
             // Present gate if needed
             if (flowStep.requestApproval && state.gate) {
+              const ffQuestions = readGateQuestions(workflowDir);
+              if (ffQuestions && ffQuestions.length > 0) {
+                state.gate = { ...state.gate, questions: ffQuestions };
+              }
               state = await presentAndResolveGate(
                 state, state.gate, workflowDir, projectRoot,
                 gatePresenter, progress,
@@ -524,6 +534,13 @@ async function executeStep(
     if (flowStep.requestApproval && state.gate) {
       const gateStepIndex = state.gate.stepIndex;
 
+      // Read optional gate questions written by the agent
+      const gateQuestions = readGateQuestions(workflowDir);
+      if (gateQuestions && gateQuestions.length > 0) {
+        state.gate.questions = gateQuestions;
+        debugLog(`GATE QUESTIONS loaded count=${gateQuestions.length}`);
+      }
+
       debugLog(`GATE ENTERED step=${flowStep.agent} stepIndex=${gateStepIndex} attempt=${attempt} maxAttempts=${maxAttempts} header="${state.gate.header}"`);
 
       // Persist the awaiting_user + gate state so the resume handler can
@@ -537,10 +554,11 @@ async function executeStep(
           ? path.join(workflowDir, state.gate.preview)
           : undefined,
         options: state.gate.options,
+        questions: state.gate.questions?.map(q => ({ question: q.question, context: q.context })),
       });
 
       debugLog(`GATE PRESENT start header="${state.gate.header}" options=${state.gate.options.map(o => o.label).join("|")}`);
-      const savedGate = { ...state.gate, options: [...state.gate.options] };
+      const savedGate = { ...state.gate, options: [...state.gate.options], questions: state.gate.questions ? [...state.gate.questions] : undefined };
       const gateStartMs = Date.now();
       try {
         state = await presentAndResolveGate(
@@ -623,7 +641,7 @@ async function executeStep(
  */
 async function presentAndResolveGate(
   state: WorkflowState,
-  gate: { header: string; preview?: string; options: Array<{ label: string; description: string; advance: boolean; abort?: boolean; feedback?: boolean }>; stepIndex: number },
+  gate: { header: string; preview?: string; options: Array<{ label: string; description: string; advance: boolean; abort?: boolean; feedback?: boolean }>; stepIndex: number; questions?: Array<{ question: string; context?: string }> },
   workflowDir: string,
   projectRoot: string,
   gatePresenter: GatePresenter,
@@ -638,6 +656,7 @@ async function presentAndResolveGate(
     header: gate.header,
     previewPath,
     options: gate.options,
+    questions: gate.questions,
   }, projectRoot);
 
   if (answer.advance) {
@@ -662,11 +681,81 @@ async function presentAndResolveGate(
   }
 
   // Reject with feedback → reset step for retry
+  // Include question answers in the feedback so the agent sees them on retry
+  const combinedFeedback = buildFeedback(answer.feedback, answer.questionAnswers);
   const gateTransition = applyGateAnswer(state, {
     stepIndex: gate.stepIndex,
     chosenLabel: answer.label,
     advance: false,
-    feedback: answer.feedback,
+    feedback: combinedFeedback || undefined,
   });
   return gateTransition.state;
 }
+
+/**
+ * Combine user feedback with gate question answers into a single
+ * feedback string for the agent to consume on retry.
+ */
+function buildFeedback(
+  userFeedback: string | undefined,
+  questionAnswers: QuestionAnswer[] | undefined,
+): string | undefined {
+  const parts: string[] = [];
+
+  if (questionAnswers && questionAnswers.length > 0) {
+    parts.push("## Answers to your gate questions\n");
+    for (const qa of questionAnswers) {
+      parts.push(`**Q: ${qa.question}**`);
+      parts.push(`A: ${qa.answer}\n`);
+    }
+  }
+
+  if (userFeedback && userFeedback.trim()) {
+    if (parts.length > 0) parts.push("---\n");
+    parts.push("## Additional feedback\n");
+    parts.push(userFeedback.trim());
+  }
+
+  return parts.length > 0 ? parts.join("\n") : undefined;
+}
+
+// ============================================================================
+// readGateQuestions — load optional agent questions for the gate
+// ============================================================================
+
+/** Max number of gate questions to present (prevents gate UI bloat). */
+const MAX_GATE_QUESTIONS = 10;
+
+/**
+ * Read gate-questions.json from the workflow directory if it exists.
+ * Returns parsed questions or undefined if the file is absent/malformed.
+ */
+function readGateQuestions(workflowDir: string): GateQuestion[] | undefined {
+  const questionsPath = path.join(workflowDir, "gate-questions.json");
+  if (!fs.existsSync(questionsPath)) return undefined;
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(questionsPath, "utf-8"));
+    if (!Array.isArray(raw?.questions) || raw.questions.length === 0) {
+      return undefined;
+    }
+
+    const valid = raw.questions
+      .filter((q: unknown): q is Record<string, unknown> =>
+        typeof q === "object" && q !== null && typeof (q as Record<string, unknown>).question === "string"
+      )
+      .slice(0, MAX_GATE_QUESTIONS);
+
+    if (valid.length === 0) return undefined;
+
+    return valid.map((q) => ({
+      question: q.question as string,
+      context: typeof q.context === "string" ? q.context : undefined,
+      id: typeof q.id === "string" ? q.id : undefined,
+    }));
+  } catch {
+    // Malformed file — ignore, proceed without questions
+    return undefined;
+  }
+}
+

@@ -528,3 +528,30 @@ identify them as open questions. Do not silently pick one approach.
 The specification should be detailed enough for `plan` to proceed without guessing.
 
 Do not implement the feature. That belongs to `implement`.
+
+## Gate Questions
+
+If you finish your work but have unresolved questions that the user should
+answer before proceeding, write `gate-questions.json` to the workflow output
+directory BEFORE stopping. The questions will be presented to the user during
+the approval gate. The user's answers will be fed back to you on retry.
+
+**Write it at** `.temp/{feature}/gate-questions.json` using this format:
+
+```json
+{
+  "questions": [
+    {
+      "question": "Clear, specific question the user must answer",
+      "context": "Why you're asking — what you tried, what's at stake, what decision hangs on this",
+      "id": "optional-stable-id"
+    }
+  ]
+}
+```
+
+**Rules:**
+- Only write questions you genuinely could NOT resolve. Every question delays the workflow.
+- If you can make a reasonable assumption, do so and document it in the spec instead.
+- Max 10 questions. If you have more, prioritize the blockers.
+- If you have NO unresolved questions, do NOT write the file (or write an empty questions array).

@@ -99,3 +99,14 @@ You are the **verify** agent. Your job is to confirm the fix resolves the bug, p
 ```
 
 Do not ask for user approval in this step. The gate after this step will present the approval dialog.
+
+## Gate Questions
+
+If you have unresolved questions after verification (e.g., "The fix works but
+introduces a new warning — is this acceptable?", "I couldn't verify edge case
+X because the test environment lacks Y"), write `gate-questions.json` before
+stopping. Format:
+
+```json
+{"questions": [{"question": "...", "context": "..."}]}
+```

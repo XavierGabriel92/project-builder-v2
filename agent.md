@@ -55,6 +55,7 @@ Orchestrator (pure TS) → AgentRunner (swappable) → LLM
 - **5 flows** built-in + project-level discovery via `.pi/project-builder/flows/*.json`
 - **3 runners**: pi-sdk (programmatic), pi-interactive (TUI), claude-code (CLI)
 - **3 gate presenters**: inquirer (CLI), auto-approve (CI), pi-tui (TUI)
+- **Gate questions**: agents can write `gate-questions.json` to ask the user questions during gate approval; answers fed back on retry
 - **Resume**: detects in-progress workflows, fast-forwards completed steps
 
 ## Flows

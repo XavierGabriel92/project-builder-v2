@@ -15,7 +15,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { GatePresenter, GateInput, GateAnswer } from "../orchestrator/ports.ts";
+import type { GatePresenter, GateInput, GateAnswer, QuestionAnswer } from "../orchestrator/ports.ts";
 
 // ============================================================================
 // PiUIContext — mirrors pi's ExtensionContext.ui API
@@ -66,6 +66,22 @@ export class PiTuiGatePresenter implements GatePresenter {
   async present(gate: GateInput, cwd: string, _retryCount = 0): Promise<GateAnswer> {
     // ── Retry guard: prevent infinite re-presentation loops ───
     const MAX_RETRIES = 3;
+
+    // ── Phase 1: Answer gate questions (one open-text prompt each) ──
+    let questionAnswers: QuestionAnswer[] | undefined;
+    if (gate.questions && gate.questions.length > 0) {
+      const result = await this.collectQuestionAnswers(gate);
+      if (result === null) {
+        // User cancelled during question answering — abort
+        const abortOpt = gate.options.find(o => o.abort);
+        return {
+          label: abortOpt?.label ?? "Exit",
+          advance: false,
+          abort: true,
+        };
+      }
+      questionAnswers = result;
+    }
 
     // ── Show preview as a notification ──────────────────────────
     if (gate.previewPath) {
@@ -121,6 +137,7 @@ export class PiTuiGatePresenter implements GatePresenter {
           label: abortOpt.label,
           advance: false,
           abort: true,
+          questionAnswers,
         };
       }
       // No abort option and select was cancelled — re-present
@@ -141,6 +158,7 @@ export class PiTuiGatePresenter implements GatePresenter {
         label: gate.options[0]?.label ?? "Exit",
         advance: false,
         abort: true,
+        questionAnswers,
       };
     }
 
@@ -171,6 +189,7 @@ export class PiTuiGatePresenter implements GatePresenter {
           label: abortOpt?.label ?? gate.options[0]?.label ?? "Exit",
           advance: false,
           abort: true,
+          questionAnswers,
         };
       }
     }
@@ -180,6 +199,50 @@ export class PiTuiGatePresenter implements GatePresenter {
       advance: chosen.advance,
       abort: chosen.abort,
       feedback,
+      questionAnswers,
     };
+  }
+
+  // ========================================================================
+  // Gate Questions
+  // ========================================================================
+
+  /**
+   * Prompt each gate question with a text input.
+   * Returns the answers, or null if the user cancelled.
+   */
+  private async collectQuestionAnswers(
+    gate: GateInput,
+  ): Promise<QuestionAnswer[] | null> {
+    if (!gate.questions || gate.questions.length === 0) return [];
+
+    const answers: QuestionAnswer[] = [];
+
+    for (let i = 0; i < gate.questions.length; i++) {
+      const q = gate.questions[i];
+
+      // Show the question as a notification for context
+      let notifyMsg = `❓ Q${i + 1}/${gate.questions.length}: ${q.question}`;
+      if (q.context) notifyMsg += `\n   🤔 ${q.context}`;
+      this.uiContext.notify(notifyMsg, "info");
+
+      const text = await this.uiContext.input(
+        `Q${i + 1}/${gate.questions.length}: ${q.question}`,
+      );
+
+      // undefined → user cancelled
+      if (text === undefined) {
+        this.uiContext.notify("Question answering cancelled.", "warn");
+        return null;
+      }
+
+      answers.push({
+        question: q.question,
+        answer: text.trim() || "(no answer provided)",
+        id: (q as Record<string, unknown>).id as string | undefined,
+      });
+    }
+
+    return answers;
   }
 }

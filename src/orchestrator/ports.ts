@@ -153,6 +153,22 @@ export interface GateInput {
     /** If true, present a text input so the user can explain what to change. */
     feedback?: boolean;
   }>;
+  /** Optional questions from the agent for the user to answer.
+   *  Rendered before the approval options. */
+  questions?: Array<{
+    question: string;
+    context?: string;
+  }>;
+}
+
+/** A user's answer to a specific gate question. */
+export interface QuestionAnswer {
+  /** The question text (for reference). */
+  question: string;
+  /** The user's free-text answer. */
+  answer: string;
+  /** Optional stable id from the original question. */
+  id?: string;
 }
 
 export interface GateAnswer {
@@ -164,6 +180,8 @@ export interface GateAnswer {
   abort?: boolean;
   /** Free-form user feedback (present when the chosen option had feedback: true). */
   feedback?: string;
+  /** Answers to gate questions (present when the agent wrote gate-questions.json). */
+  questionAnswers?: QuestionAnswer[];
 }
 
 export interface GatePresenter {
