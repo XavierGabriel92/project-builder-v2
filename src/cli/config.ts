@@ -74,7 +74,7 @@ export function loadConfig(projectRoot: string): ProjectBuilderConfig {
 export interface MergedCliConfig {
   runner: string;
   gate: string;
-  flowId: string;
+  flowId?: string;
   model?: string;
   thinkingLevel?: string;
   agentsDir: string;
@@ -107,7 +107,7 @@ export function mergeConfig(
         : (config.runner ?? "pi-sdk"),
     gate:
       cli.gate !== "inquirer" ? cli.gate : (config.gate ?? "inquirer"),
-    flowId: cli.flowId ?? config.defaultFlow ?? "feature-build",
+    flowId: cli.flowId ?? config.defaultFlow,
     model: cli.model ?? config.model,
     thinkingLevel: cli.thinkingLevel ?? config.thinkingLevel,
     agentsDir:
