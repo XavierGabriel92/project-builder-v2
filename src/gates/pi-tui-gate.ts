@@ -81,9 +81,22 @@ export class PiTuiGatePresenter implements GatePresenter {
         };
       }
       questionAnswers = result;
+
+      // ── Confirmation: show summary before proceeding to approval gate ──
+      const confirmed = await this.confirmQuestionAnswers(questionAnswers);
+      if (confirmed === null || !confirmed) {
+        // User cancelled during confirmation — abort
+        const abortOpt = gate.options.find(o => o.abort);
+        this.uiContext.notify("Answers discarded. Aborting gate.", "warn");
+        return {
+          label: abortOpt?.label ?? "Exit",
+          advance: false,
+          abort: true,
+        };
+      }
     }
 
-    // ── Show preview as a notification ──────────────────────────
+    // ── Show preview as a notification ─────────────────────────
     if (gate.previewPath) {
       const fullPath = path.resolve(cwd, gate.previewPath);
       if (fs.existsSync(fullPath)) {
@@ -244,5 +257,36 @@ export class PiTuiGatePresenter implements GatePresenter {
     }
 
     return answers;
+  }
+
+  /**
+   * Show a summary of the user's answers and ask for confirmation
+   * before proceeding to the approval gate.
+   * Returns true if the user wants to submit, false if they cancel,
+   * or null if they pressed Escape.
+   */
+  private async confirmQuestionAnswers(
+    answers: QuestionAnswer[],
+  ): Promise<boolean | null> {
+    // Build summary
+    let summary = "📋 Summary of your answers:\n";
+    for (let i = 0; i < answers.length; i++) {
+      const qa = answers[i];
+      summary += `\nQ${i + 1}: ${qa.question}`;
+      summary += `\nA: ${qa.answer}`;
+    }
+
+    this.uiContext.notify(summary, "info");
+
+    const choice = await this.uiContext.select<string>(
+      "What would you like to do?",
+      [
+        { label: "Submit answers", description: "Proceed to review gate", value: "submit" },
+        { label: "Cancel", description: "Discard answers and abort workflow", value: "cancel" },
+      ],
+    );
+
+    if (!choice) return null; // Esc pressed
+    return choice === "submit";
   }
 }

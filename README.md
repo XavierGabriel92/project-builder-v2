@@ -112,7 +112,7 @@ Engine layer forked verbatim from v1 with 3 import path fixes:
 - `transitions.ts` — Pure state machine (createWorkflowState, startStep, applyStepResult, applyGateAnswer)
 - `persistence.ts` — Atomic workflow.json I/O
 - `agent-loader.ts` — Parse agents/*.md → manifest + prompt
-- `agents/*.md` — 15 agent manifests (spec-write, plan, implement, review, lint, doc-sync, etc.)
+- `agents/*.md` — 18 agent manifests (spec-write, plan, plan-test, implement, test, review, lint, doc-sync, etc.)
 
 ### New in v2
 
@@ -123,7 +123,7 @@ Engine layer forked verbatim from v1 with 3 import path fixes:
 - **Gate questions** — agents can write `gate-questions.json` to surface unresolved questions during approval; user answers via feedback
 - ConsoleProgress: spinner animation, step timing, total duration
 - Auto-resume: detects in-progress workflows, fast-forwards completed steps
-- 5 built-in flows: feature-build, bug-fix, small-feature, quick-build, ci-build
+- 5 built-in flows: feature-build (now with plan-test + test steps), bug-fix, small-feature, quick-build, ci-build
 
 ---
 
@@ -140,7 +140,7 @@ src/
 ├── flows/           builtin (5 flows), validation, discovery
 ├── cli/             args, factory, config, interactive, resume
 └── main.ts          entry point
-agents/              15 agent .md manifests + subagents/
+agents/              18 agent .md manifests + subagents/
 test/                16 prompt-builder unit tests
 plans/               implementation plans
 docs/                gate bug decision record

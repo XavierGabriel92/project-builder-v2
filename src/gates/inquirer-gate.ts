@@ -61,6 +61,19 @@ export class InquirerGatePresenter implements GatePresenter {
         };
       }
       questionAnswers = result;
+
+      // ── Confirmation: show summary before proceeding to approval gate ──
+      const confirmed = await this.confirmQuestionAnswers(questionAnswers);
+      if (!confirmed) {
+        // User cancelled during confirmation — abort
+        const abortOpt = gate.options.find(o => o.abort);
+        console.log("Answers discarded. Aborting gate...\n");
+        return {
+          label: abortOpt?.label ?? "Exit",
+          advance: false,
+          abort: true,
+        };
+      }
     }
 
     // ── Phase 2: Show preview + standard approval dialog ──────
@@ -170,6 +183,42 @@ export class InquirerGatePresenter implements GatePresenter {
     // Blank line after all questions answered
     console.log("");
     return answers;
+  }
+
+  /**
+   * Show a summary of the user's answers and ask for confirmation
+   * before proceeding to the approval gate. Returns true if the
+   * user wants to submit, false if they want to cancel.
+   */
+  private async confirmQuestionAnswers(
+    answers: QuestionAnswer[],
+  ): Promise<boolean> {
+    const divider = "─".repeat(50);
+
+    // Print summary
+    console.log(`${divider}`);
+    console.log("📋 Summary of your answers");
+    console.log(`${divider}\n`);
+    for (let i = 0; i < answers.length; i++) {
+      const qa = answers[i];
+      console.log(`  Q${i + 1}: ${qa.question}`);
+      console.log(`  A: ${qa.answer}\n`);
+    }
+    console.log(`${divider}\n`);
+
+    const { choice } = await inquirer.prompt<{ choice: "submit" | "cancel" }>([
+      {
+        type: "list",
+        name: "choice",
+        message: "What would you like to do?",
+        choices: [
+          { name: "Submit answers — proceed to review gate", value: "submit" },
+          { name: "Cancel — discard answers and abort workflow", value: "cancel" },
+        ],
+      },
+    ]);
+
+    return choice === "submit";
   }
 
   // ========================================================================

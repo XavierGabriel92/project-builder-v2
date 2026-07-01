@@ -11,18 +11,20 @@ import type { FlowDefinition } from "../engine/types.ts";
 /**
  * Full product feature build pipeline.
  *
- *   spec-write (gate) → plan →
- *   implement (2 attempts) → review (gate) → lint →
+ *   spec-write (gate) → plan → plan-test →
+ *   implement (30 attempts) → test (2 attempts) → review (gate) → lint →
  *   doc-sync (2 attempts)
  */
 export const FEATURE_BUILD_FLOW: FlowDefinition = {
   id: "feature-build",
-  version: 6,
+  version: 7,
   description: "Full product feature build from analysis to completion docs",
   steps: [
     { agent: "spec-write", requestApproval: true, attempts: 3 },
     { agent: "plan" },
+    { agent: "plan-test", requestApproval: true },
     { agent: "implement", attempts: 30 },
+    { agent: "test", attempts: 2 },
     { agent: "review", requestApproval: true },
     { agent: "lint" },
     { agent: "doc-sync", attempts: 2 },
